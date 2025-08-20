@@ -1,0 +1,11 @@
+tcg_csv_historical.md
+2024-12-01
+*.csv
+*.json
+*.pyc
+data/tcg_products_full.csv
+data
+*.log
+*.pid
+pricedata
+*.txt

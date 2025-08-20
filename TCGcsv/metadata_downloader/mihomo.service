@@ -1,0 +1,26 @@
+[Unit]
+Description=Mihomo (Clash Meta) Proxy Server
+Documentation=https://wiki.metacubex.one/
+After=network.target network-online.target nss-lookup.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=mihomo
+Group=mihomo
+ExecStart=/usr/local/bin/mihomo -d /etc/mihomo
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1000000
+LimitNPROC=1000000
+
+# Security settings
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/mihomo
+ReadWritePaths=/etc/mihomo
+
+[Install]
+WantedBy=multi-user.target

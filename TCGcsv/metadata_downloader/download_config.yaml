@@ -1,0 +1,55 @@
+# Enhanced TCG API Downloader Configuration
+
+# Rate limiting settings - Optimized for BigQuery buffering
+rate_limiting:
+  min_interval: 0.5          # Minimum seconds between requests (2.0 req/s) - relies on BigQuery natural buffering
+  max_retries: 3             # Maximum retry attempts for failed requests
+  backoff_factor: 2.0        # Exponential backoff multiplier
+
+# BigQuery settings - Optimized for performance
+bigquery:
+  batch_size: 1000           # Rows to batch before streaming insert (increased for better performance)
+  create_backup: true        # Create CSV backups on BigQuery failures
+  deduplication: true        # Enable automatic deduplication
+  table_partition: 'update_date'  # Partition field
+  table_clustering: 'product_productId'  # Clustering field
+
+# Category processing settings
+categories:
+  skip_empty: true           # Skip groups with 0 products
+  retry_failed: true         # Retry failed groups on resume
+  max_groups_per_batch: 50   # Process groups in batches for checkpointing
+
+# Logging configuration - Enhanced for performance analysis
+logging:
+  level: 'INFO'              # Log level: DEBUG, INFO, WARNING, ERROR (INFO for performance tracking)
+  max_file_size: '10MB'      # Maximum log file size before rotation
+  backup_count: 5            # Number of backup log files to keep
+  performance_tracking: true # Enable detailed performance metrics logging
+  
+# Checkpoint settings
+checkpoints:
+  save_frequency: 10         # Save checkpoint every N groups
+  backup_checkpoints: true   # Keep backup checkpoint files
+  
+# Download behavior
+download:
+  auto_resume: true          # Automatically resume on restart
+  verify_bigquery: true      # Verify data in BigQuery after each category
+  progress_reports: true     # Generate progress reports
+  
+# Screen session settings
+screen:
+  default_session_name: 'tcg_enhanced_download'
+  auto_create: true          # Auto-create screen sessions for background runs
+  
+# Error handling
+error_handling:
+  max_consecutive_failures: 10  # Stop if too many consecutive group failures
+  failure_delay: 5.0         # Seconds to wait after group failure
+  log_full_errors: true      # Log full error tracebacks
+
+# Proxy settings - V2rayA default configuration (disabled until nodes configured)
+proxy:
+  # http: 'http://127.0.0.1:20172'    # V2rayA HTTP proxy (disabled)
+  # https: 'http://127.0.0.1:20172'   # V2rayA HTTPS proxy (disabled)

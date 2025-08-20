@@ -1,0 +1,42 @@
+# Data files
+*.csv
+*.json
+*.xlsx
+*.zip
+*.log
+
+# Service account keys
+service-account.json
+
+# Product details directory
+product_details/
+
+# Archive directories
+archive/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
