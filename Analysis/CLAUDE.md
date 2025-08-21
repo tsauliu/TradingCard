@@ -19,6 +19,27 @@ This project pulls data from BigQuery and performs analysis on trading card data
 - Purpose: Trading card data analysis
 - Access pattern: Read-only data pulling and analysis
 
+### Directory Organization
+
+#### /scripts
+Contains reusable, generic scripts that can be used across different analyses:
+- `pull_weekly_data.py` - Generic script to pull weekly TCG price data from BigQuery
+- `create_pivot_tables.py` - Creates formatted Excel pivot tables by category  
+- `create_single_pivot.py` - Creates single-sheet pivot with price and count sections
+- `create_enhanced_pivot.py` - Enhanced pivot tables with category display names
+
+#### /tempfile  
+Contains one-time, specific-use scripts for particular analyses:
+- `create_bda_pivot.py` - Specific analysis for BDA (Business Data Analytics) data
+- `create_bda_condition_pivot.py` - BDA data analysis grouped by card condition
+- `create_alakazam_condition_pivot.py` - Product-specific analysis for Alakazam (Product 42346)
+
+#### /output
+Directory for generated data files and analysis results. Generated files should use datetime prefix format (YYYY-MM-DD_HHMMSS) for easy sorting and identification:
+- CSV exports from BigQuery queries
+- Excel pivot tables and reports  
+- Analysis summaries and charts
+
 ## BigQuery Table Schemas
 
 ### tcg_metadata (118,339 rows)
@@ -96,3 +117,4 @@ Contains sales transaction data and business analytics information.
 - high_sale_price: FLOAT
 - high_sale_price_with_shipping: FLOAT
 - transaction_count: INTEGER
+- always output as formatted excel
