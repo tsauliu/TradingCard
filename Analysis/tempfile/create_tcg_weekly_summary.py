@@ -124,16 +124,41 @@ def main():
     ORDER BY condition, week_start
     """
     
+    # Query for weekly unique products with sales (pivot format)
+    unique_products_query = """
+    WITH weekly_data AS (
+      SELECT 
+        DATE_TRUNC(bucket_start_date, WEEK(MONDAY)) as week_start,
+        COUNT(DISTINCT product_id) as unique_products_with_sales
+      FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda`
+      WHERE quantity_sold > 0
+        AND product_id IS NOT NULL
+        AND bucket_start_date IS NOT NULL
+        AND bucket_start_date >= '2024-01-01'
+      GROUP BY DATE_TRUNC(bucket_start_date, WEEK(MONDAY))
+    )
+    SELECT 
+      'Total' as metric,
+      week_start,
+      unique_products_with_sales
+    FROM weekly_data
+    ORDER BY week_start
+    """
+    
     print("Executing ASP query...")
     asp_df = client.query(asp_query).to_dataframe()
     
     print("Executing volume query...")
     volume_df = client.query(volume_query).to_dataframe()
     
+    print("Executing unique products query...")
+    unique_products_df = client.query(unique_products_query).to_dataframe()
+    
     print(f"ASP data: {len(asp_df)} rows")
     print(f"Volume data: {len(volume_df)} rows")
+    print(f"Unique products data: {len(unique_products_df)} rows")
     
-    if asp_df.empty or volume_df.empty:
+    if asp_df.empty or volume_df.empty or unique_products_df.empty:
         print("No data returned. Exiting.")
         return
     
@@ -150,6 +175,13 @@ def main():
     volume_pivot.columns = [f"{col.strftime('%Y-%m-%d')}" for col in volume_pivot.columns]
     volume_pivot = volume_pivot.reset_index()
     volume_pivot.columns.name = None
+    
+    # Pivot Unique Products data - weeks as columns
+    unique_products_pivot = unique_products_df.pivot(index='metric', columns='week_start', values='unique_products_with_sales')
+    unique_products_pivot = unique_products_pivot.fillna(0).astype(int)
+    unique_products_pivot.columns = [f"{col.strftime('%Y-%m-%d')}" for col in unique_products_pivot.columns]
+    unique_products_pivot = unique_products_pivot.reset_index()
+    unique_products_pivot.columns.name = None
     
     # Create output directory if it doesn't exist
     output_dir = "../output"
@@ -172,15 +204,20 @@ def main():
     # Volume Section  
     current_row = add_formatted_data(ws, volume_pivot, current_row, "Weekly Quantity Sold by Condition")
     
+    # Unique Products Section
+    current_row = add_formatted_data(ws, unique_products_pivot, current_row, "Weekly Number of Unique Products with Sales")
+    
     wb.save(excel_file)
     
     print(f"Formatted Excel file saved: {excel_file}")
     print(f"ASP Data Shape: {asp_pivot.shape}")
     print(f"Volume Data Shape: {volume_pivot.shape}")
+    print(f"Unique Products Data Shape: {unique_products_pivot.shape}")
     
     print("\nConditions in data:")
     print("ASP:", asp_pivot['condition'].tolist())
     print("Volume:", volume_pivot['condition'].tolist())
+    print("Unique Products:", unique_products_pivot['metric'].tolist())
 
 if __name__ == "__main__":
     main()

@@ -83,69 +83,84 @@ def main():
     client = bigquery.Client()
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     
-    # Step 1: Get top 50 products by lifecycle quantity_sold with recent week avg price > $5
+    # Step 1: Get top 200 products by lifecycle quantity sold (ASP > $5, first week qty > 0) with all metadata
     top_products_query = """
-    WITH recent_week_prices AS (
+    WITH first_week_products AS (
       SELECT 
         product_id,
-        DATE_TRUNC(bucket_start_date, WEEK(MONDAY)) as week_start,
-        AVG(market_price) as avg_market_price
+        MIN(DATE_TRUNC(bucket_start_date, WEEK(MONDAY))) as first_week
       FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda`
-      WHERE market_price > 0 
-        AND bucket_start_date IS NOT NULL
-        AND bucket_start_date >= '2024-01-01'
-        AND product_id IS NOT NULL
-      GROUP BY product_id, DATE_TRUNC(bucket_start_date, WEEK(MONDAY))
-    ),
-    latest_week_per_product AS (
-      SELECT 
-        product_id,
-        MAX(week_start) as latest_week
-      FROM recent_week_prices
+      WHERE bucket_start_date IS NOT NULL 
+        AND quantity_sold IS NOT NULL
       GROUP BY product_id
     ),
-    products_with_recent_price AS (
+    first_week_quantities AS (
       SELECT 
-        rwp.product_id,
-        rwp.avg_market_price as recent_avg_price
-      FROM recent_week_prices rwp
-      INNER JOIN latest_week_per_product lwp 
-        ON rwp.product_id = lwp.product_id 
-        AND rwp.week_start = lwp.latest_week
-      WHERE rwp.avg_market_price > 5
+        p.product_id,
+        SUM(p.quantity_sold) as first_week_quantity
+      FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda` p
+      INNER JOIN first_week_products fw 
+        ON p.product_id = fw.product_id 
+        AND DATE_TRUNC(p.bucket_start_date, WEEK(MONDAY)) = fw.first_week
+      WHERE p.quantity_sold IS NOT NULL
+      GROUP BY p.product_id
+      HAVING SUM(p.quantity_sold) > 0
     )
     SELECT 
         p.product_id,
+        SUM(p.quantity_sold) as lifecycle_quantity_sold,
+        CASE 
+          WHEN SUM(p.quantity_sold) > 0 
+          THEN SUM(p.quantity_sold * p.market_price) / SUM(p.quantity_sold)
+          ELSE 0 
+        END as lifecycle_asp,
+        m.category_categoryId,
+        m.category_name,
+        m.category_displayName,
+        m.category_seoCategoryName,
+        m.category_categoryDescription,
+        m.category_categoryPageTitle,
+        m.category_sealedLabel,
+        m.category_nonSealedLabel,
+        m.category_conditionGuideUrl,
+        m.category_isScannable,
+        m.category_popularity,
+        m.category_isDirect,
+        m.group_groupId,
+        m.group_name,
+        m.group_abbreviation,
+        m.group_isSupplemental,
+        m.group_publishedOn,
+        m.group_categoryId,
+        m.product_productId,
         m.product_name,
-        SUM(CAST(p.total_quantity_sold AS INT64)) as lifecycle_quantity_sold,
-        pwrp.recent_avg_price
+        m.product_cleanName,
+        m.product_imageUrl,
+        m.product_categoryId,
+        m.product_groupId,
+        m.product_url,
+        m.product_modifiedOn,
+        m.product_imageCount,
+        m.product_presaleInfo,
+        m.product_extendedData
     FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda` p
-    INNER JOIN products_with_recent_price pwrp 
-      ON p.product_id = pwrp.product_id
+    INNER JOIN first_week_quantities fwq 
+      ON p.product_id = fwq.product_id
     LEFT JOIN `rising-environs-456314-a3.tcg_data.tcg_metadata` m
       ON CAST(p.product_id AS STRING) = CAST(m.product_productId AS STRING)
-    WHERE p.total_quantity_sold IS NOT NULL 
-      AND p.total_quantity_sold != ''
-      AND (m.product_name IS NULL OR (
-        LOWER(m.product_name) NOT LIKE '%pack%'
-        AND LOWER(m.product_name) NOT LIKE '%bundle%'
-        AND LOWER(m.product_name) NOT LIKE '%box%'
-        AND LOWER(m.product_name) NOT LIKE '%booster%'
-        AND LOWER(m.product_name) NOT LIKE '%sealed%'
-        AND LOWER(m.product_name) NOT LIKE '%deck%'
-        AND LOWER(m.product_name) NOT LIKE '%tin%'
-        AND LOWER(m.product_name) NOT LIKE '%collection%'
-        AND LOWER(m.product_name) NOT LIKE '%set%'
-        AND LOWER(m.product_name) NOT LIKE '%lot%'
-        AND LOWER(m.product_name) NOT LIKE '%theme%'
-        AND LOWER(m.product_name) NOT LIKE '%starter%'
-      ))
-    GROUP BY p.product_id, m.product_name, pwrp.recent_avg_price
+    WHERE p.quantity_sold IS NOT NULL 
+      AND p.market_price > 0
+    GROUP BY p.product_id, m.category_categoryId, m.category_name, m.category_displayName, m.category_seoCategoryName, m.category_categoryDescription, m.category_categoryPageTitle, m.category_sealedLabel, m.category_nonSealedLabel, m.category_conditionGuideUrl, m.category_isScannable, m.category_popularity, m.category_isDirect, m.group_groupId, m.group_name, m.group_abbreviation, m.group_isSupplemental, m.group_publishedOn, m.group_categoryId, m.product_productId, m.product_name, m.product_cleanName, m.product_imageUrl, m.product_categoryId, m.product_groupId, m.product_url, m.product_modifiedOn, m.product_imageCount, m.product_presaleInfo, m.product_extendedData
+    HAVING CASE 
+             WHEN SUM(p.quantity_sold) > 0 
+             THEN SUM(p.quantity_sold * p.market_price) / SUM(p.quantity_sold)
+             ELSE 0 
+           END > 5
     ORDER BY lifecycle_quantity_sold DESC
-    LIMIT 50
+    LIMIT 200
     """
     
-    print("Getting top 50 single cards by lifecycle quantity_sold (excluding packs/bundles)...")
+    print("Getting top 200 products by lifecycle quantity sold (ASP > $5, first week qty > 0)...")
     top_products_df = client.query(top_products_query).to_dataframe()
     
     if top_products_df.empty:
@@ -154,11 +169,11 @@ def main():
     
     print(f"Found {len(top_products_df)} top products")
     
-    # Get the list of top 50 product IDs
+    # Get the list of top 200 product IDs
     top_product_ids = top_products_df['product_id'].tolist()
     top_product_ids_str = "', '".join([str(pid) for pid in top_product_ids])
     
-    # Step 2: Get weekly data for these products with product names
+    # Step 2: Get weekly data for these top 200 products
     weekly_data_query = f"""
     SELECT 
         p.product_id,
@@ -181,7 +196,7 @@ def main():
     ORDER BY p.product_id, week_start, p.condition
     """
     
-    print("Getting weekly data for top 50 products...")
+    print("Getting weekly data for top 200 products...")
     weekly_data_df = client.query(weekly_data_query).to_dataframe()
     
     if weekly_data_df.empty:
@@ -227,59 +242,85 @@ def main():
     
     weekly_summary_df = pd.DataFrame(weekly_summary)
     
-    # Step 4: Create pivot tables for summary sheet
-    print("Creating pivot tables...")
+    # Step 4: Create 3 separate datasets - Metadata, Prices, Quantities
+    print("Creating 3 separate datasets: Metadata, Prices, Quantities...")
     
-    # Create a product lookup for names
-    product_names = weekly_summary_df.drop_duplicates(['product_id', 'product_name'])[['product_id', 'product_name']]
+    # Ensure consistent product_id ordering across all sheets
+    product_order = top_products_df['product_id'].tolist()
     
-    # Pivot weighted prices - weeks as columns
-    price_pivot = weekly_summary_df.pivot(index='product_id', columns='week_start', values='weighted_avg_price')
-    price_pivot = price_pivot.round(2).fillna(0)
-    price_pivot.columns = [f"{col.strftime('%Y-%m-%d')}" for col in price_pivot.columns]
-    price_pivot = price_pivot.reset_index()
+    # 1. Metadata sheet - only specified columns
+    metadata_columns = ['product_id', 'lifecycle_quantity_sold', 'group_name', 'product_cleanName', 'product_url']
+    metadata_df = top_products_df[metadata_columns].copy()
     
-    # Add product names to price pivot
-    price_pivot = price_pivot.merge(product_names, on='product_id', how='left')
-    price_pivot = price_pivot[['product_id', 'product_name'] + [col for col in price_pivot.columns if col not in ['product_id', 'product_name']]]
-    price_pivot.columns.name = None
+    # Create new combined column
+    metadata_df['group_product_id'] = (
+        metadata_df['group_name'].fillna('').astype(str) + ' ' + 
+        metadata_df['product_cleanName'].fillna('').astype(str) + ' ' + 
+        metadata_df['product_id'].astype(str)
+    )
     
-    # Pivot quantities - weeks as columns
-    quantity_pivot = weekly_summary_df.pivot(index='product_id', columns='week_start', values='total_weekly_quantity')
-    quantity_pivot = quantity_pivot.fillna(0).astype(int)
-    quantity_pivot.columns = [f"{col.strftime('%Y-%m-%d')}" for col in quantity_pivot.columns]
-    quantity_pivot = quantity_pivot.reset_index()
+    # 2. Create price dataset
+    price_data_list = []
+    for product_id in product_order:
+        row_data = {'product_id': product_id}
+        product_weekly = weekly_summary_df[weekly_summary_df['product_id'] == product_id]
+        
+        for week in sorted(weekly_summary_df['week_start'].unique()):
+            week_data = product_weekly[product_weekly['week_start'] == week]
+            if not week_data.empty:
+                row_data[week] = round(week_data['weighted_avg_price'].iloc[0], 2)
+            else:
+                row_data[week] = 0.0
+        price_data_list.append(row_data)
     
-    # Add product names to quantity pivot
-    quantity_pivot = quantity_pivot.merge(product_names, on='product_id', how='left')
-    quantity_pivot = quantity_pivot[['product_id', 'product_name'] + [col for col in quantity_pivot.columns if col not in ['product_id', 'product_name']]]
-    quantity_pivot.columns.name = None
+    prices_df = pd.DataFrame(price_data_list)
+    
+    # 3. Create quantity dataset
+    quantity_data_list = []
+    for product_id in product_order:
+        row_data = {'product_id': product_id}
+        product_weekly = weekly_summary_df[weekly_summary_df['product_id'] == product_id]
+        
+        for week in sorted(weekly_summary_df['week_start'].unique()):
+            week_data = product_weekly[product_weekly['week_start'] == week]
+            if not week_data.empty:
+                row_data[week] = int(week_data['total_weekly_quantity'].iloc[0])
+            else:
+                row_data[week] = 0
+        quantity_data_list.append(row_data)
+    
+    quantities_df = pd.DataFrame(quantity_data_list)
     
     # Create output directory if it doesn't exist
     output_dir = "../output"
     os.makedirs(output_dir, exist_ok=True)
     
-    # Create Excel file
-    excel_file = f"{output_dir}/{timestamp}_top50_products_analysis.xlsx"
+    # Create Excel file with 3 separate sheets
+    excel_file = f"{output_dir}/{timestamp}_top200_products_analysis.xlsx"
     
     wb = Workbook()
     
-    # Summary Sheet
-    ws_summary = wb.active
-    ws_summary.title = "Summary"
+    # Sheet 1: Metadata
+    ws_metadata = wb.active
+    ws_metadata.title = "Metadata"
+    add_formatted_data(ws_metadata, metadata_df, 1, 
+                      "Top 200 Products - Metadata, Quantity Sold & ASP", price_format=False)
     
-    current_row = 1
-    current_row = add_formatted_data(ws_summary, price_pivot, current_row, 
-                                   "Top 50 Products - Weekly Weighted Average Price", price_format=True)
-    current_row = add_formatted_data(ws_summary, quantity_pivot, current_row, 
-                                   "Top 50 Products - Weekly Total Quantity Sold", price_format=False)
+    # Sheet 2: Prices
+    ws_prices = wb.create_sheet(title="Prices")
+    add_formatted_data(ws_prices, prices_df, 1, 
+                      "Top 200 Products - Weekly Prices", price_format=True)
     
-    # Detailed Sheet
-    ws_detailed = wb.create_sheet(title="Detailed Data")
+    # Sheet 3: Quantities
+    ws_quantities = wb.create_sheet(title="Quantities")
+    add_formatted_data(ws_quantities, quantities_df, 1, 
+                      "Top 200 Products - Weekly Quantities", price_format=False)
+    
+    # Optional: Keep detailed sheet as well
+    ws_detailed = wb.create_sheet(title="Detailed Weekly by Condition")
     
     # Format detailed data
     detailed_df = weekly_data_df.copy()
-    # Convert week_start to string format if it's datetime
     if pd.api.types.is_datetime64_any_dtype(detailed_df['week_start']):
         detailed_df['week_start'] = detailed_df['week_start'].dt.strftime('%Y-%m-%d')
     detailed_df = detailed_df.round({'avg_market_price': 2})
@@ -289,12 +330,13 @@ def main():
     wb.save(excel_file)
     
     print(f"Excel file saved: {excel_file}")
-    print(f"Summary - Price pivot shape: {price_pivot.shape}")
-    print(f"Summary - Quantity pivot shape: {quantity_pivot.shape}")
+    print(f"Metadata sheet shape: {metadata_df.shape}")
+    print(f"Prices sheet shape: {prices_df.shape}")
+    print(f"Quantities sheet shape: {quantities_df.shape}")
     print(f"Detailed data shape: {detailed_df.shape}")
     
-    print(f"\nTop 10 single cards by lifecycle quantity (recent avg price > $5, excluding packs/bundles):")
-    print(top_products_df.head(10)[['product_id', 'product_name', 'lifecycle_quantity_sold', 'recent_avg_price']])
+    print(f"\nTop 10 products by lifecycle quantity sold (ASP > $5, first week qty > 0):")
+    print(top_products_df.head(10)[['product_id', 'product_name', 'lifecycle_quantity_sold', 'lifecycle_asp']])
 
 if __name__ == "__main__":
     main()

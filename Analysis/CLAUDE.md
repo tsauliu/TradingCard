@@ -33,6 +33,8 @@ Contains one-time, specific-use scripts for particular analyses:
 - `create_bda_pivot.py` - Specific analysis for BDA (Business Data Analytics) data
 - `create_bda_condition_pivot.py` - BDA data analysis grouped by card condition
 - `create_alakazam_condition_pivot.py` - Product-specific analysis for Alakazam (Product 42346)
+- `create_tcg_weekly_summary.py` - Weekly summary analysis with ASP, volume, and unique product metrics
+- `create_top50_analysis.py` - Top 15 products analysis by lifecycle quantity sold with Excel date formatting
 
 #### /output
 Directory for generated data files and analysis results. Generated files should use datetime prefix format (YYYY-MM-DD_HHMMSS) for easy sorting and identification:
@@ -118,3 +120,37 @@ Contains sales transaction data and business analytics information.
 - high_sale_price_with_shipping: FLOAT
 - transaction_count: INTEGER
 - always output as formatted excel
+
+## Key Analysis Scripts
+
+### create_tcg_weekly_summary.py (Modified 2025-08-21)
+**Location:** `/tempfile/create_tcg_weekly_summary.py`
+**Purpose:** Comprehensive weekly summary analysis of BDA data with three key metrics
+
+**Output Sections:**
+1. **Weekly Average Selling Price (ASP) by Condition** - Price trends across 6 card conditions
+2. **Weekly Quantity Sold by Condition** - Volume trends across 6 card conditions  
+3. **Weekly Number of Unique Products with Sales** - Count of unique product IDs with quantity_sold > 0 per week
+
+**Data Coverage:** 2024-present (53+ weeks)
+**Output Format:** Formatted Excel with datetime prefix (YYYY-MM-DD_HHMMSS_bda_weekly_summary_formatted.xlsx)
+**Card Conditions:** Damaged, Heavily Played, Lightly Played, Moderately Played, Near Mint, Unopened
+
+### create_top50_analysis.py (Modified 2025-08-21)
+**Location:** `/tempfile/create_top50_analysis.py`
+**Purpose:** Top 15 products analysis by lifecycle quantity sold with comprehensive filtering
+
+**Filters Applied:**
+1. **ASP > $5** - Only products with average selling price above $5
+2. **First Week Quantity > 0** - Excludes products with zero sales in their chronological first week
+3. **Lifecycle Quantity Sold** - Ranked by total quantity sold across all time periods
+
+**Output Structure:**
+- **3-Sheet Excel Format** with datetime prefix (YYYY-MM-DD_HHMMSS_top15_products_analysis.xlsx)
+- **Metadata Sheet** (15 products × 6 columns): product_id, lifecycle_quantity_sold, group_name, product_cleanName, product_url, group_product_id (combined)
+- **Prices Sheet** (15 products × 53 weeks): product_id + weekly price data with Excel date formatting
+- **Quantities Sheet** (15 products × 53 weeks): product_id + weekly quantity data with Excel date formatting
+- **Detailed Sheet**: Raw weekly data by condition for reference
+
+**Data Source:** tcg_prices_bda (quantity_sold × market_price calculations)
+**Date Range:** 2024-present, starting from each product's first sales week

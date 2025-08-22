@@ -51,6 +51,9 @@ class PSAAPIScraper:
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         
+        # Load card metadata
+        self.card_metadata = self.load_card_metadata()
+        
         # PSA Grades mapping
         self.grades = [
             {"value": "10", "label": "PSA 10"},
@@ -86,6 +89,51 @@ class PSAAPIScraper:
             logger.info(f"BigQuery client initialized for project: {self.project_id}")
         except Exception as e:
             logger.error(f"Failed to initialize BigQuery client: {e}")
+    
+    def load_card_metadata(self) -> Dict[str, Dict]:
+        """Load card metadata from psa_card_list.csv"""
+        try:
+            df = pd.read_csv('psa_card_list.csv')
+            metadata = {}
+            for _, row in df.iterrows():
+                item_id = str(row['card_id'])
+                card_name = row['card_name']
+                url = row['url']
+                
+                # Get additional fields if available
+                card_number = row.get('card_number')
+                lifecycle_sales_count = row.get('lifecycle_sales_count')
+                
+                # Extract set from URL
+                url_parts = url.strip('/').split('/')
+                card_set = url_parts[2] if len(url_parts) > 2 else None
+                
+                # Extract year from set
+                import re
+                year_match = re.search(r'(\d{4})', card_set) if card_set else None
+                card_year = int(year_match.group(1)) if year_match else None
+                
+                # Identify variant
+                card_variant = None
+                if '1st Edition' in card_name:
+                    card_variant = '1st Edition'
+                elif 'Shadowless' in card_name:
+                    card_variant = 'Shadowless'
+                
+                metadata[item_id] = {
+                    'card_name': card_name,
+                    'card_set': card_set,
+                    'card_year': card_year,
+                    'card_variant': card_variant,
+                    'psa_url': url,
+                    'lifecycle_sales_count': lifecycle_sales_count if pd.notna(lifecycle_sales_count) else None
+                }
+            
+            logger.info(f"Loaded metadata for {len(metadata)} cards")
+            return metadata
+        except Exception as e:
+            logger.error(f"Failed to load card metadata: {e}")
+            return {}
             
     def fetch_auction_data(self, item_id: str, grade: str, max_retries: int = 3) -> Optional[Dict]:
         """Fetch auction data for a specific item ID and grade"""
@@ -133,6 +181,9 @@ class PSAAPIScraper:
         historical_summary = raw_data.get('historicalItemAuctionSummary', {})
         sales_data = historical_info.get('highestDailySales', [])
         
+        # Get card metadata
+        card_meta = self.card_metadata.get(item_id, {})
+        
         # Create summary record
         summary_record = {
             'item_id': item_id,
@@ -150,7 +201,13 @@ class PSAAPIScraper:
             'sale_date': None,
             'sale_price': None,
             'scraped_at': datetime.now().isoformat(),
-            'data_source': 'psa_api'
+            'data_source': 'psa_api',
+            'card_name': card_meta.get('card_name'),
+            'card_set': card_meta.get('card_set'),
+            'card_year': card_meta.get('card_year'),
+            'card_variant': card_meta.get('card_variant'),
+            'psa_url': card_meta.get('psa_url'),
+            'lifecycle_sales_count': card_meta.get('lifecycle_sales_count')
         }
         processed_records.append(summary_record)
         
@@ -172,7 +229,13 @@ class PSAAPIScraper:
                 'sale_date': sale.get('dateOfSale'),
                 'sale_price': sale.get('price'),
                 'scraped_at': datetime.now().isoformat(),
-                'data_source': 'psa_api'
+                'data_source': 'psa_api',
+                'card_name': card_meta.get('card_name'),
+                'card_set': card_meta.get('card_set'),
+                'card_year': card_meta.get('card_year'),
+                'card_variant': card_meta.get('card_variant'),
+                'psa_url': card_meta.get('psa_url'),
+                'lifecycle_sales_count': card_meta.get('lifecycle_sales_count')
             }
             processed_records.append(sale_record)
         
@@ -214,6 +277,12 @@ class PSAAPIScraper:
             bigquery.SchemaField("sale_price", "FLOAT", mode="NULLABLE"),
             bigquery.SchemaField("scraped_at", "TIMESTAMP", mode="REQUIRED"),
             bigquery.SchemaField("data_source", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("card_name", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("card_set", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("card_year", "INTEGER", mode="NULLABLE"),
+            bigquery.SchemaField("card_variant", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("psa_url", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("lifecycle_sales_count", "INTEGER", mode="NULLABLE"),
         ]
         
         # Create table
