@@ -1,0 +1,430 @@
+#!/usr/bin/env python3
+"""
+eBay Research API Search Script
+Searches eBay sold items and retrieves price/sales metrics
+"""
+
+import argparse
+import json
+import requests
+import sys
+import time
+from datetime import datetime, timedelta
+from typing import Dict, Optional, Any
+from urllib.parse import quote, urlencode
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+
+class eBaySearchAPI:
+    """eBay Research API client for searching sold items and getting metrics"""
+    
+    BASE_URL = "https://www.ebay.com/sh/research/api/search"
+    
+    # Default headers mimicking browser request
+    DEFAULT_HEADERS = {
+        'accept': '*/*',
+        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6,pl;q=0.5',
+        'cache-control': 'no-cache',
+        'expires': 'Sat, 01 Jan 2000 00:00:00 GMT',
+        'pragma': 'no-cache',
+        'priority': 'u=1, i',
+        'sec-ch-ua': '"Not;A=Brand";v="99", "Microsoft Edge";v="139", "Chromium";v="139"',
+        'sec-ch-ua-full-version': '"139.0.3405.125"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-model': '""',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-ch-ua-platform-version': '"12.0.0"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin',
+        'x-requested-with': 'XMLHttpRequest',
+    }
+    
+    def __init__(self, proxy: Optional[str] = None, cookies: Optional[str] = None):
+        """
+        Initialize eBay API client
+        
+        Args:
+            proxy: Proxy URL (e.g., 'http://127.0.0.1:20171')
+            cookies: Cookie string for authentication
+        """
+        self.session = requests.Session()
+        self.session.headers.update(self.DEFAULT_HEADERS)
+        
+        if proxy:
+            self.session.proxies = {
+                'http': proxy,
+                'https': proxy
+            }
+            logger.info(f"Using proxy: {proxy}")
+        
+        if cookies:
+            self.session.headers['cookie'] = cookies
+            logger.info("Cookies loaded")
+    
+    def search(
+        self,
+        keywords: str,
+        days: int = 1095,  # Default 3 years
+        marketplace: str = "EBAY-US",
+        category_id: int = 0,
+        offset: int = 0,
+        limit: int = 50,
+        tab_name: str = "SOLD",
+        timezone: str = "Asia/Shanghai",
+        modules: str = "metricsTrends"
+    ) -> Dict[str, Any]:
+        """
+        Search eBay sold items with metrics
+        
+        Args:
+            keywords: Search keywords
+            days: Number of days to look back
+            marketplace: eBay marketplace (EBAY-US, EBAY-UK, etc.)
+            category_id: Category ID (0 for all categories)
+            offset: Result offset for pagination
+            limit: Number of results per page
+            tab_name: Tab type (SOLD, ACTIVE, etc.)
+            timezone: Timezone for date handling
+            modules: API modules to include
+        
+        Returns:
+            API response as dictionary
+        """
+        # Calculate date range
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+        
+        # Convert to milliseconds timestamp
+        end_timestamp = int(end_date.timestamp() * 1000)
+        start_timestamp = int(start_date.timestamp() * 1000)
+        
+        # Build query parameters
+        params = {
+            'marketplace': marketplace,
+            'keywords': keywords,
+            'dayRange': days,
+            'endDate': end_timestamp,
+            'startDate': start_timestamp,
+            'categoryId': category_id,
+            'offset': offset,
+            'limit': limit,
+            'tabName': tab_name,
+            'tz': timezone,
+            'modules': modules
+        }
+        
+        # Build URL with parameters
+        url = f"{self.BASE_URL}?{urlencode(params)}"
+        
+        # Set referer header
+        referer_params = params.copy()
+        referer_url = f"https://www.ebay.com/sh/research?{urlencode(referer_params)}"
+        self.session.headers['Referer'] = referer_url
+        
+        logger.info(f"Searching for: {keywords}")
+        logger.info(f"Date range: {start_date.date()} to {end_date.date()}")
+        logger.info(f"URL: {url[:100]}...")
+        
+        try:
+            # Make request with retry logic
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    response = self.session.get(url, timeout=30)
+                    response.raise_for_status()
+                    
+                    # Parse JSON response - handle multiple JSON objects
+                    if response.text:
+                        # Split by newlines and parse each non-empty line as JSON
+                        lines = response.text.strip().split('\n')
+                        data = {}
+                        
+                        for i, line in enumerate(lines):
+                            if line.strip():
+                                try:
+                                    json_obj = json.loads(line)
+                                    # Use the module type as key if available
+                                    if isinstance(json_obj, dict) and '_type' in json_obj:
+                                        data[json_obj['_type']] = json_obj
+                                    else:
+                                        data[f'module_{i}'] = json_obj
+                                except json.JSONDecodeError:
+                                    logger.debug(f"Could not parse line {i}: {line[:100]}...")
+                        
+                        # Check for error in response
+                        if 'PageErrorModule' in data:
+                            logger.error(f"API Error: {data['PageErrorModule']}")
+                            if attempt < max_retries - 1:
+                                logger.info(f"Retrying... (attempt {attempt + 2}/{max_retries})")
+                                time.sleep(2 ** attempt)  # Exponential backoff
+                                continue
+                            return data
+                    else:
+                        data = {}
+                    
+                    logger.info("Search completed successfully")
+                    return data
+                    
+                except requests.exceptions.RequestException as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Request failed: {e}. Retrying...")
+                        time.sleep(2 ** attempt)
+                    else:
+                        raise
+                        
+        except Exception as e:
+            logger.error(f"Search failed: {e}")
+            return {'error': str(e)}
+    
+    def extract_metrics(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract key metrics from API response
+        
+        Args:
+            data: API response data
+        
+        Returns:
+            Extracted metrics dictionary
+        """
+        metrics = {
+            'search_timestamp': datetime.now().isoformat(),
+            'data_points': 0,
+            'avg_prices': [],
+            'quantities': [],
+            'date_range': {},
+            'statistics': {}
+        }
+        
+        # Check if we have valid metrics data
+        if not isinstance(data, dict):
+            return metrics
+            
+        # Find MetricsTrendsModule - check both direct key and values
+        metrics_module = data.get('MetricsTrendsModule')
+        
+        if not metrics_module:
+            # Search in values if not found by key
+            for item in data.values():
+                if isinstance(item, dict) and item.get('_type') == 'MetricsTrendsModule':
+                    metrics_module = item
+                    break
+        
+        if metrics_module:
+            series = metrics_module.get('series', [])
+            
+            for serie in series:
+                if serie.get('id') == 'averageSold':
+                    # Extract average prices
+                    price_data = serie.get('data', [])
+                    metrics['avg_prices'] = [
+                        {
+                            'date': datetime.fromtimestamp(p[0]/1000).isoformat(),
+                            'price': p[1]
+                        }
+                        for p in price_data if p[1] is not None
+                    ]
+                    
+                    # Calculate statistics
+                    prices = [p[1] for p in price_data if p[1] is not None]
+                    if prices:
+                        metrics['statistics']['avg_price'] = sum(prices) / len(prices)
+                        metrics['statistics']['min_price'] = min(prices)
+                        metrics['statistics']['max_price'] = max(prices)
+                        metrics['statistics']['price_range'] = max(prices) - min(prices)
+                
+                elif serie.get('id') == 'quantity':
+                    # Extract quantities
+                    qty_data = serie.get('data', [])
+                    metrics['quantities'] = [
+                        {
+                            'date': datetime.fromtimestamp(q[0]/1000).isoformat(),
+                            'quantity': q[1]
+                        }
+                        for q in qty_data if q[1] is not None
+                    ]
+                    
+                    # Calculate statistics
+                    quantities = [q[1] for q in qty_data if q[1] is not None]
+                    if quantities:
+                        metrics['statistics']['total_sold'] = sum(quantities)
+                        metrics['statistics']['avg_weekly_sales'] = sum(quantities) / len(quantities)
+                        metrics['statistics']['min_weekly_sales'] = min(quantities)
+                        metrics['statistics']['max_weekly_sales'] = max(quantities)
+            
+            metrics['data_points'] = len(metrics['avg_prices'])
+            
+            # Get date range
+            if metrics['avg_prices']:
+                metrics['date_range'] = {
+                    'start': metrics['avg_prices'][0]['date'],
+                    'end': metrics['avg_prices'][-1]['date']
+                }
+        
+        return metrics
+
+
+def load_cookies_from_file(filepath: str) -> Optional[str]:
+    """Load cookies from a file"""
+    try:
+        with open(filepath, 'r') as f:
+            cookies = f.read().strip()
+        logger.info(f"Loaded cookies from {filepath}")
+        return cookies
+    except FileNotFoundError:
+        logger.warning(f"Cookie file not found: {filepath}")
+        return None
+    except Exception as e:
+        logger.error(f"Error loading cookies: {e}")
+        return None
+
+
+def save_results(data: Dict[str, Any], output_file: str, pretty: bool = True):
+    """Save results to JSON file"""
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            if pretty:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            else:
+                json.dump(data, f, ensure_ascii=False)
+        logger.info(f"Results saved to: {output_file}")
+    except Exception as e:
+        logger.error(f"Error saving results: {e}")
+
+
+def main():
+    """Main entry point"""
+    parser = argparse.ArgumentParser(
+        description='Search eBay sold items and retrieve price/sales metrics',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s "pokemon cards"
+  %(prog)s "magic the gathering" --days 365 --output mtg_data.json
+  %(prog)s "vintage electronics" --limit 100 --offset 50
+  %(prog)s "sports cards" --marketplace EBAY-UK --no-proxy
+        """
+    )
+    
+    # Required arguments
+    parser.add_argument('keywords', help='Search keywords')
+    
+    # Optional arguments
+    parser.add_argument('--output', '-o', help='Output JSON file (default: ebay_search_TIMESTAMP.json)')
+    parser.add_argument('--days', '-d', type=int, default=1095, help='Number of days to look back (default: 1095, ~3 years)')
+    parser.add_argument('--marketplace', '-m', default='EBAY-US', help='eBay marketplace (default: EBAY-US)')
+    parser.add_argument('--category', '-c', type=int, default=0, help='Category ID (default: 0 for all)')
+    parser.add_argument('--offset', type=int, default=0, help='Result offset for pagination')
+    parser.add_argument('--limit', '-l', type=int, default=50, help='Results per page (default: 50, max: 200)')
+    parser.add_argument('--proxy', '-p', default='http://127.0.0.1:20171', help='Proxy URL (default: http://127.0.0.1:20171)')
+    parser.add_argument('--no-proxy', action='store_true', help='Disable proxy')
+    parser.add_argument('--cookie-file', help='File containing cookies')
+    parser.add_argument('--extract-metrics', action='store_true', help='Extract and display key metrics')
+    parser.add_argument('--compact', action='store_true', help='Save JSON in compact format')
+    parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose logging')
+    
+    args = parser.parse_args()
+    
+    # Configure logging
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    # Determine output filename
+    if not args.output:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_keywords = args.keywords.replace(' ', '_').replace('/', '_')[:50]
+        args.output = f"ebay_search_{safe_keywords}_{timestamp}.json"
+    
+    # Load cookies if provided
+    cookies = None
+    if args.cookie_file:
+        cookies = load_cookies_from_file(args.cookie_file)
+    else:
+        # Try to load from default location
+        cookies = load_cookies_from_file('ebay_cookies.txt')
+    
+    # Determine proxy
+    proxy = None if args.no_proxy else args.proxy
+    
+    # Create API client
+    api = eBaySearchAPI(proxy=proxy, cookies=cookies)
+    
+    # Perform search
+    logger.info(f"Searching eBay for: {args.keywords}")
+    results = api.search(
+        keywords=args.keywords,
+        days=args.days,
+        marketplace=args.marketplace,
+        category_id=args.category,
+        offset=args.offset,
+        limit=args.limit
+    )
+    
+    # Check for errors
+    if 'error' in results:
+        logger.error(f"Search failed: {results['error']}")
+        sys.exit(1)
+    
+    # Extract metrics if requested
+    if args.extract_metrics:
+        metrics = api.extract_metrics(results)
+        
+        # Display metrics summary
+        if metrics['statistics']:
+            logger.info("\n=== METRICS SUMMARY ===")
+            stats = metrics['statistics']
+            
+            if 'avg_price' in stats:
+                logger.info(f"Average Price: ${stats['avg_price']:.2f}")
+                logger.info(f"Price Range: ${stats['min_price']:.2f} - ${stats['max_price']:.2f}")
+            
+            if 'total_sold' in stats:
+                logger.info(f"Total Items Sold: {stats['total_sold']:,}")
+                logger.info(f"Avg Weekly Sales: {stats['avg_weekly_sales']:.0f}")
+                logger.info(f"Sales Range: {stats['min_weekly_sales']} - {stats['max_weekly_sales']}")
+            
+            if metrics['date_range']:
+                logger.info(f"Date Range: {metrics['date_range']['start'][:10]} to {metrics['date_range']['end'][:10]}")
+            
+            logger.info(f"Data Points: {metrics['data_points']}")
+        
+        # Add metrics to results
+        results['extracted_metrics'] = metrics
+    
+    # Add metadata
+    results['search_metadata'] = {
+        'keywords': args.keywords,
+        'marketplace': args.marketplace,
+        'days': args.days,
+        'limit': args.limit,
+        'offset': args.offset,
+        'timestamp': datetime.now().isoformat(),
+        'output_file': args.output
+    }
+    
+    # Save results
+    save_results(results, args.output, pretty=not args.compact)
+    
+    # Display summary
+    logger.info(f"\n✓ Search completed successfully")
+    logger.info(f"✓ Results saved to: {args.output}")
+    
+    # Check if we got valid data
+    has_metrics = 'MetricsTrendsModule' in results or any(
+        item.get('_type') == 'MetricsTrendsModule' 
+        for item in results.values() 
+        if isinstance(item, dict)
+    )
+    
+    if has_metrics:
+        logger.info("✓ Metrics data retrieved successfully")
+    else:
+        logger.warning("⚠ No metrics data found in response (may need valid cookies)")
+
+
+if __name__ == '__main__':
+    main()
