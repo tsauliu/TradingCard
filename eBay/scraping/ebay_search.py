@@ -45,16 +45,21 @@ class eBaySearchAPI:
         'x-requested-with': 'XMLHttpRequest',
     }
     
-    def __init__(self, proxy: Optional[str] = None, cookies: Optional[str] = None):
+    def __init__(self, proxy: Optional[str] = None, cookies: Optional[str] = None, min_delay: float = 10.0):
         """
-        Initialize eBay API client
+        Initialize eBay API client with rate limiting
         
         Args:
             proxy: Proxy URL (e.g., 'http://127.0.0.1:20171')
             cookies: Cookie string for authentication
+            min_delay: Minimum delay between requests (default and minimum: 10 seconds)
         """
         self.session = requests.Session()
         self.session.headers.update(self.DEFAULT_HEADERS)
+        
+        # Rate limiting - enforce minimum 10 second delay
+        self.min_delay = max(10.0, min_delay)
+        self.last_request_time = 0
         
         if proxy:
             self.session.proxies = {
@@ -66,6 +71,30 @@ class eBaySearchAPI:
         if cookies:
             self.session.headers['cookie'] = cookies
             logger.info("Cookies loaded")
+        
+        logger.info(f"Rate limiting enabled: {self.min_delay}s minimum delay")
+    
+    def _apply_rate_limit(self):
+        """Apply rate limiting between requests"""
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        
+        if time_since_last < self.min_delay:
+            wait_time = self.min_delay - time_since_last
+            logger.info(f"Rate limiting: waiting {wait_time:.1f}s before next request...")
+            
+            # Show countdown for waits longer than 5 seconds
+            if wait_time > 5:
+                import sys
+                for i in range(int(wait_time), 0, -1):
+                    print(f"\rWaiting: {i}s ", end='', flush=True)
+                    time.sleep(1)
+                print("\r" + " " * 20 + "\r", end='', flush=True)
+                time.sleep(wait_time - int(wait_time))
+            else:
+                time.sleep(wait_time)
+        
+        self.last_request_time = time.time()
     
     def search(
         self,
@@ -80,7 +109,7 @@ class eBaySearchAPI:
         modules: str = "metricsTrends"
     ) -> Dict[str, Any]:
         """
-        Search eBay sold items with metrics
+        Search eBay sold items with metrics and rate limiting
         
         Args:
             keywords: Search keywords
@@ -96,6 +125,9 @@ class eBaySearchAPI:
         Returns:
             API response as dictionary
         """
+        # Apply rate limiting BEFORE making the request
+        self._apply_rate_limit()
+        
         # Calculate date range
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)

@@ -1,19 +1,19 @@
 # eBay Search API Scripts
 
-Advanced Python scripts for searching eBay sold items and extracting price/sales metrics with Excel pivot table support.
+Advanced Python scripts for searching eBay sold items with automatic resume capability, Excel pivot tables, and intelligent rate limiting.
 
 ## Features
 
-- **Single & Batch Search**: Search one or multiple keywords
+- **Automatic Resume**: Saves progress after every search, resume from exact stopping point
+- **Rate Limiting**: Enforced 10-second minimum delay with adaptive adjustments
+- **Session Management**: Organized temp folder structure with state persistence
 - **Excel Pivot Tables**: Generate pivot tables with prices and quantities by week
-- **Metrics Extraction**: Automatic extraction of average prices, sales volumes, and trends
-- **Proxy Support**: Built-in support for HTTP proxy (default: 127.0.0.1:20171)
+- **Progress Tracking**: Visual progress bars with estimated time remaining
+- **Error Recovery**: Intelligent retry logic with exponential backoff
+- **Batch Processing**: Search multiple keywords with checkpoint saves
 - **Cookie Management**: Handle authentication via cookies
-- **Multiple Output Formats**: JSON, CSV, Excel reports with pivot tables
-- **Pagination Support**: Handle large result sets with offset/limit
-- **Error Handling**: Automatic retries with exponential backoff
 - **Time Aggregation**: Weekly, monthly, or quarterly data aggregation
-- **Visualization**: Optional charts and formatting in Excel output
+- **Concurrent Protection**: Session locking prevents data corruption
 
 ## Installation
 
@@ -61,11 +61,30 @@ Search without proxy:
 python ebay_search.py "vintage electronics" --no-proxy
 ```
 
-### Batch Search
+### Batch Search with Resume
 
-Search multiple keywords:
+Start new search with automatic resume capability:
 ```bash
-python ebay_batch_search.py "pokemon cards" "magic the gathering" "yugioh"
+# Start new batch (automatically saves to .ebay_temp/)
+python ebay_batch_search.py --file keywords.txt --min-delay 15 --checkpoint-every 5
+
+# If interrupted (Ctrl+C), resume from last position:
+python ebay_batch_search.py --resume last --file keywords.txt
+
+# Resume specific session:
+python ebay_batch_search.py --resume 20250902_143022_hostname --file keywords.txt
+
+# Retry failed searches:
+python ebay_batch_search.py --resume last --retry-failed
+```
+
+Session management:
+```bash
+# List all sessions
+python ebay_batch_search.py --list-sessions
+
+# Clean old sessions (>7 days)
+python ebay_batch_search.py --cleanup-sessions 7
 ```
 
 Generate Excel pivot table:
@@ -82,12 +101,12 @@ python ebay_batch_search.py "pokemon" "magic" --excel-pivot quarterly_report --t
 
 From file (one keyword per line):
 ```bash
-python ebay_batch_search.py --file keywords.txt --days 365
+python ebay_batch_search.py --file keywords.txt --days 365 --continue-on-error
 ```
 
 With custom output directory:
 ```bash
-python ebay_batch_search.py --file cards.txt --output-dir results/ --delay 3
+python ebay_batch_search.py --file cards.txt --output-dir results/ --min-delay 20
 ```
 
 ## Command Line Options
@@ -121,12 +140,23 @@ python ebay_batch_search.py --file cards.txt --output-dir results/ --delay 3
 | `--days, -d` | Number of days to look back | 1095 |
 | `--marketplace, -m` | eBay marketplace | EBAY-US |
 | `--limit, -l` | Results per search | 50 |
-| `--delay` | Delay between searches (seconds) | 2.0 |
+| `--min-delay` | Minimum delay between requests (≥10s) | 10.0 |
+| **Resume Options** | | |
+| `--resume` | Resume session (ID or "last") | None |
+| `--temp-dir` | Temp directory for sessions | .ebay_temp |
+| `--keep-temp` | Keep temp files after completion | False |
+| `--checkpoint-every` | Save checkpoint every N searches | 10 |
+| `--retry-failed` | Retry previously failed searches | False |
+| `--continue-on-error` | Continue on failures | False |
+| `--list-sessions` | List all sessions and exit | False |
+| `--cleanup-sessions` | Clean sessions older than N days | None |
+| **Output Options** | | |
 | `--output-dir, -o` | Output directory | . |
 | `--no-report` | Skip report generation | False |
 | `--excel-pivot` | Generate pivot Excel with name | None |
 | `--time-period` | Aggregation (weekly/monthly/quarterly) | weekly |
 | `--no-charts` | Disable charts in Excel | False |
+| **Connection Options** | | |
 | `--proxy, -p` | Proxy URL | http://127.0.0.1:20171 |
 | `--no-proxy` | Disable proxy | False |
 | `--cookie-file` | Cookie file path | ebay_cookies.txt |
@@ -324,11 +354,46 @@ When charts are enabled (default), the Excel includes:
 4. **Investment Analysis**: Track collectible card values over time
 5. **Reporting**: Generate professional reports with charts
 
+## Resume System
+
+The resume system automatically saves progress and allows recovery from any interruption:
+
+### How It Works
+1. **Automatic State Saving**: After every search, the state is saved to `.ebay_temp/session_*/state.json`
+2. **Individual Result Files**: Each search result is saved separately in `.ebay_temp/session_*/results/`
+3. **Checkpoint Backups**: Periodic checkpoints saved every N searches (configurable)
+4. **Session Locking**: Prevents concurrent access to the same session
+5. **Intelligent Recovery**: On resume, skips completed searches and continues from exact stopping point
+
+### Session Structure
+```
+.ebay_temp/
+└── session_20250902_143022_hostname/
+    ├── state.json              # Current session state
+    ├── results/                # Individual search results
+    │   ├── 0001_pokemon_cards.json
+    │   ├── 0002_magic_gathering.json
+    │   └── 0003_yugioh_cards.json
+    ├── logs/                   # Session logs
+    │   ├── session.log
+    │   └── errors.log
+    ├── checkpoints/            # Periodic state backups
+    │   └── checkpoint_20250902_144530.json
+    └── exports/                # Exported data
+```
+
+### Rate Limiting Details
+- **Minimum Delay**: 10 seconds (enforced, cannot be reduced)
+- **Adaptive Delays**: Automatically increases on errors (10s → 15s → 22.5s → 33.75s...)
+- **Success Recovery**: Gradually reduces delay after consistent successes (never below 10s)
+- **Request Monitoring**: Increases delay if request rate exceeds 6/minute
+
 ## Files
 
-- `ebay_search.py` - Main search script with Excel support
-- `ebay_batch_search.py` - Batch search with pivot tables
+- `ebay_search.py` - Main search script with Excel support and rate limiting
+- `ebay_batch_search.py` - Batch search with resume capability
+- `ebay_resume_manager.py` - Session persistence and recovery system
 - `ebay_excel_utils.py` - Excel pivot table utilities
 - `requirements.txt` - Python dependencies
-- `ebay_cookies.txt.example` - Cookie file template
+- `CLAUDE.md` - Comprehensive Claude instructions
 - `README_EBAY_SEARCH.md` - This documentation
