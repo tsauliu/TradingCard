@@ -14,6 +14,7 @@ from typing import List, Dict, Any
 import logging
 
 from ebay_search import eBaySearchAPI, load_cookies_from_file
+from ebay_excel_utils import create_pivot_dataframes, save_pivot_to_excel, create_summary_pivot
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -114,12 +115,46 @@ class eBayBatchSearcher:
         
         return pd.DataFrame(comparison_data)
     
-    def generate_report(self, output_dir: str = '.'):
+    def generate_pivot_excel(
+        self, 
+        output_file: str,
+        time_period: str = 'weekly',
+        add_charts: bool = True
+    ):
+        """
+        Generate Excel file with pivot tables for all search results
+        
+        Args:
+            output_file: Output Excel file path
+            time_period: 'weekly', 'monthly', or 'quarterly'
+            add_charts: Whether to add trend charts
+        """
+        try:
+            if not self.results:
+                logger.warning("No results to save to Excel")
+                return
+            
+            # Use the utility function to create pivot Excel
+            create_summary_pivot(
+                self.results,
+                output_file,
+                time_period=time_period,
+                add_statistics=True,
+                add_charts=add_charts
+            )
+            
+            logger.info(f"Pivot Excel saved to: {output_file}")
+            
+        except Exception as e:
+            logger.error(f"Error generating pivot Excel: {e}")
+    
+    def generate_report(self, output_dir: str = '.', generate_pivot: bool = True):
         """
         Generate comprehensive report with all results
         
         Args:
             output_dir: Directory to save report files
+            generate_pivot: Whether to generate pivot Excel file
         """
         output_path = Path(output_dir)
         output_path.mkdir(exist_ok=True)
@@ -131,6 +166,11 @@ class eBayBatchSearcher:
         with open(raw_file, 'w', encoding='utf-8') as f:
             json.dump(self.results, f, indent=2, ensure_ascii=False)
         logger.info(f"Raw results saved to: {raw_file}")
+        
+        # Generate pivot Excel if requested
+        if generate_pivot:
+            pivot_file = output_path / f"pivot_table_{timestamp}.xlsx"
+            self.generate_pivot_excel(str(pivot_file))
         
         # Save comparison table
         df = self.compare_results()
@@ -205,6 +245,8 @@ Examples:
   %(prog)s "pokemon cards" "magic the gathering" "yugioh"
   %(prog)s --file keywords.txt --days 365
   %(prog)s --file cards.txt --output-dir results/ --delay 3
+  %(prog)s "pokemon" "magic" "yugioh" --excel-pivot trading_cards
+  %(prog)s --file keywords.txt --excel-pivot analysis --time-period monthly
         """
     )
     
@@ -221,6 +263,9 @@ Examples:
     # Output options
     parser.add_argument('--output-dir', '-o', default='.', help='Output directory for results')
     parser.add_argument('--no-report', action='store_true', help='Skip report generation')
+    parser.add_argument('--excel-pivot', help='Generate pivot Excel file with specified name')
+    parser.add_argument('--time-period', choices=['weekly', 'monthly', 'quarterly'], default='weekly', help='Time period for pivot aggregation')
+    parser.add_argument('--no-charts', action='store_true', help='Disable charts in Excel output')
     
     # Connection options
     parser.add_argument('--proxy', '-p', default='http://127.0.0.1:20171', help='Proxy URL')
@@ -268,10 +313,27 @@ Examples:
     logger.info(f"\nStarting batch search with {args.delay}s delay between searches...")
     results = searcher.search_multiple(keywords_list, delay=args.delay, **search_params)
     
+    # Generate Excel pivot if requested
+    if args.excel_pivot:
+        output_path = Path(args.output_dir)
+        output_path.mkdir(exist_ok=True)
+        
+        if not args.excel_pivot.endswith('.xlsx'):
+            excel_file = output_path / f"{args.excel_pivot}.xlsx"
+        else:
+            excel_file = output_path / args.excel_pivot
+        
+        logger.info(f"\nGenerating pivot Excel: {excel_file}")
+        searcher.generate_pivot_excel(
+            str(excel_file),
+            time_period=args.time_period,
+            add_charts=not args.no_charts
+        )
+    
     # Generate report
     if not args.no_report:
         logger.info("\nGenerating reports...")
-        searcher.generate_report(args.output_dir)
+        searcher.generate_report(args.output_dir, generate_pivot=not args.excel_pivot)
         
         # Display comparison table
         df = searcher.compare_results()

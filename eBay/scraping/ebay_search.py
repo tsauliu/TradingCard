@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional, Any
 from urllib.parse import quote, urlencode
 import logging
+from ebay_excel_utils import create_pivot_dataframes, save_pivot_to_excel
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -296,6 +297,66 @@ def save_results(data: Dict[str, Any], output_file: str, pretty: bool = True):
         logger.error(f"Error saving results: {e}")
 
 
+def save_results_to_excel(
+    data: Dict[str, Any], 
+    keywords: str, 
+    output_file: str,
+    add_charts: bool = True
+):
+    """
+    Save results to Excel file in pivot table format
+    
+    Args:
+        data: API response data
+        keywords: Search keywords
+        output_file: Output Excel file path
+        add_charts: Whether to add trend charts
+    """
+    try:
+        # Prepare data in the format expected by create_pivot_dataframes
+        search_results = [{
+            'keywords': keywords,
+            'data': data
+        }]
+        
+        # Create pivot DataFrames
+        price_df, quantity_df = create_pivot_dataframes(search_results)
+        
+        # Add metadata
+        metadata = {
+            'Keywords': keywords,
+            'Generated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'Marketplace': data.get('search_metadata', {}).get('marketplace', 'EBAY-US'),
+            'Days Searched': data.get('search_metadata', {}).get('days', 'N/A'),
+            'Data Points': len(price_df.columns) if not price_df.empty else 0
+        }
+        
+        # Extract statistics if available
+        if 'extracted_metrics' in data:
+            stats = data['extracted_metrics'].get('statistics', {})
+            if stats:
+                metadata.update({
+                    'Average Price': f"${stats.get('avg_price', 0):.2f}",
+                    'Total Sold': f"{stats.get('total_sold', 0):,}",
+                    'Date Range': f"{data['extracted_metrics'].get('date_range', {}).get('start', 'N/A')[:10]} to {data['extracted_metrics'].get('date_range', {}).get('end', 'N/A')[:10]}"
+                })
+        
+        # Save to Excel
+        save_pivot_to_excel(
+            price_df,
+            quantity_df,
+            output_file,
+            metadata=metadata,
+            add_charts=add_charts,
+            add_formatting=True
+        )
+        
+        logger.info(f"Excel file saved to: {output_file}")
+        
+    except Exception as e:
+        logger.error(f"Error saving Excel file: {e}")
+
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
@@ -307,6 +368,8 @@ Examples:
   %(prog)s "magic the gathering" --days 365 --output mtg_data.json
   %(prog)s "vintage electronics" --limit 100 --offset 50
   %(prog)s "sports cards" --marketplace EBAY-UK --no-proxy
+  %(prog)s "pokemon cards" --excel --output pokemon_pivot.xlsx
+  %(prog)s "trading cards" --excel --no-charts
         """
     )
     
@@ -314,7 +377,7 @@ Examples:
     parser.add_argument('keywords', help='Search keywords')
     
     # Optional arguments
-    parser.add_argument('--output', '-o', help='Output JSON file (default: ebay_search_TIMESTAMP.json)')
+    parser.add_argument('--output', '-o', help='Output file (default: auto-generated with .json or .xlsx extension)')
     parser.add_argument('--days', '-d', type=int, default=1095, help='Number of days to look back (default: 1095, ~3 years)')
     parser.add_argument('--marketplace', '-m', default='EBAY-US', help='eBay marketplace (default: EBAY-US)')
     parser.add_argument('--category', '-c', type=int, default=0, help='Category ID (default: 0 for all)')
@@ -325,6 +388,8 @@ Examples:
     parser.add_argument('--cookie-file', help='File containing cookies')
     parser.add_argument('--extract-metrics', action='store_true', help='Extract and display key metrics')
     parser.add_argument('--compact', action='store_true', help='Save JSON in compact format')
+    parser.add_argument('--excel', action='store_true', help='Save as Excel pivot table instead of JSON')
+    parser.add_argument('--no-charts', action='store_true', help='Disable charts in Excel output')
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose logging')
     
     args = parser.parse_args()
@@ -333,11 +398,21 @@ Examples:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
     
-    # Determine output filename
-    if not args.output:
+    # Determine output filename and format
+    output_format = 'excel' if args.excel else 'json'
+    
+    if args.output:
+        # Check if user specified format via extension
+        if args.output.endswith('.xlsx'):
+            output_format = 'excel'
+        elif args.output.endswith('.json'):
+            output_format = 'json'
+    else:
+        # Auto-generate filename
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         safe_keywords = args.keywords.replace(' ', '_').replace('/', '_')[:50]
-        args.output = f"ebay_search_{safe_keywords}_{timestamp}.json"
+        extension = '.xlsx' if output_format == 'excel' else '.json'
+        args.output = f"ebay_search_{safe_keywords}_{timestamp}{extension}"
     
     # Load cookies if provided
     cookies = None
@@ -406,12 +481,20 @@ Examples:
         'output_file': args.output
     }
     
-    # Save results
-    save_results(results, args.output, pretty=not args.compact)
+    # Save results based on format
+    if output_format == 'excel':
+        save_results_to_excel(
+            results, 
+            args.keywords, 
+            args.output,
+            add_charts=not args.no_charts
+        )
+    else:
+        save_results(results, args.output, pretty=not args.compact)
     
     # Display summary
     logger.info(f"\n✓ Search completed successfully")
-    logger.info(f"✓ Results saved to: {args.output}")
+    logger.info(f"✓ Results saved to: {args.output} ({'Excel pivot table' if output_format == 'excel' else 'JSON'})")
     
     # Check if we got valid data
     has_metrics = 'MetricsTrendsModule' in results or any(

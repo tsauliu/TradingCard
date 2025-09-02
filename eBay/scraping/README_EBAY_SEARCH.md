@@ -1,16 +1,19 @@
 # eBay Search API Scripts
 
-Advanced Python scripts for searching eBay sold items and extracting price/sales metrics.
+Advanced Python scripts for searching eBay sold items and extracting price/sales metrics with Excel pivot table support.
 
 ## Features
 
 - **Single & Batch Search**: Search one or multiple keywords
+- **Excel Pivot Tables**: Generate pivot tables with prices and quantities by week
 - **Metrics Extraction**: Automatic extraction of average prices, sales volumes, and trends
 - **Proxy Support**: Built-in support for HTTP proxy (default: 127.0.0.1:20171)
 - **Cookie Management**: Handle authentication via cookies
-- **Multiple Output Formats**: JSON, CSV, Excel reports
+- **Multiple Output Formats**: JSON, CSV, Excel reports with pivot tables
 - **Pagination Support**: Handle large result sets with offset/limit
 - **Error Handling**: Automatic retries with exponential backoff
+- **Time Aggregation**: Weekly, monthly, or quarterly data aggregation
+- **Visualization**: Optional charts and formatting in Excel output
 
 ## Installation
 
@@ -33,9 +36,15 @@ pip install -r requirements.txt
 
 ### Single Search
 
-Basic search:
+Basic search (JSON output):
 ```bash
 python ebay_search.py "pokemon cards"
+```
+
+Excel pivot table output:
+```bash
+python ebay_search.py "pokemon cards" --excel --output pokemon.xlsx
+python ebay_search.py "magic cards" --excel --no-charts  # Without charts
 ```
 
 With options:
@@ -57,6 +66,18 @@ python ebay_search.py "vintage electronics" --no-proxy
 Search multiple keywords:
 ```bash
 python ebay_batch_search.py "pokemon cards" "magic the gathering" "yugioh"
+```
+
+Generate Excel pivot table:
+```bash
+# Create pivot table with all searches
+python ebay_batch_search.py "pokemon" "magic" "yugioh" --excel-pivot trading_cards
+
+# Monthly aggregation
+python ebay_batch_search.py --file keywords.txt --excel-pivot analysis --time-period monthly
+
+# Quarterly without charts
+python ebay_batch_search.py "pokemon" "magic" --excel-pivot quarterly_report --time-period quarterly --no-charts
 ```
 
 From file (one keyword per line):
@@ -87,6 +108,8 @@ python ebay_batch_search.py --file cards.txt --output-dir results/ --delay 3
 | `--cookie-file` | Cookie file path | ebay_cookies.txt |
 | `--extract-metrics` | Extract and display metrics | False |
 | `--compact` | Save JSON in compact format | False |
+| `--excel` | Save as Excel pivot table | False |
+| `--no-charts` | Disable charts in Excel | False |
 | `--verbose, -v` | Enable verbose logging | False |
 
 ### ebay_batch_search.py
@@ -101,6 +124,9 @@ python ebay_batch_search.py --file cards.txt --output-dir results/ --delay 3
 | `--delay` | Delay between searches (seconds) | 2.0 |
 | `--output-dir, -o` | Output directory | . |
 | `--no-report` | Skip report generation | False |
+| `--excel-pivot` | Generate pivot Excel with name | None |
+| `--time-period` | Aggregation (weekly/monthly/quarterly) | weekly |
+| `--no-charts` | Disable charts in Excel | False |
 | `--proxy, -p` | Proxy URL | http://127.0.0.1:20171 |
 | `--no-proxy` | Disable proxy | False |
 | `--cookie-file` | Cookie file path | ebay_cookies.txt |
@@ -124,11 +150,37 @@ python ebay_batch_search.py --file cards.txt --output-dir results/ --delay 3
   }
   ```
 
+- **Excel File** (with --excel flag): Pivot table format with 4 sheets:
+  - **Prices**: Weekly average prices (columns are dates)
+  - **Quantities**: Weekly sales volumes (columns are dates)
+  - **Statistics**: Summary statistics for the search
+  - **Metadata**: Search parameters and metadata
+
 ### Batch Search
 - **batch_results_*.json**: Raw results for all searches
 - **comparison_*.csv**: Comparison table
 - **comparison_*.xlsx**: Excel report with formatting
 - **summary_*.txt**: Text summary of all searches
+- **pivot_table_*.xlsx** (or custom name): Multi-keyword pivot table with:
+  - **Sheet 1 - Prices**: Rows are keywords, columns are weeks
+  - **Sheet 2 - Quantities**: Rows are keywords, columns are weeks
+  - **Sheet 3 - Statistics**: Summary stats for all keywords
+  - **Sheet 4 - Metadata**: Search parameters
+
+### Excel Pivot Table Structure
+```
+Sheet 1 - Prices:
+Keywords         | 2024-08-05 | 2024-08-12 | ... | 2025-08-26 |
+pokemon cards    |     45.60  |     48.25  | ... |     58.64  |
+magic gathering  |     32.30  |     34.80  | ... |     35.12  |
+yugioh cards     |     24.75  |     26.20  | ... |     28.12  |
+
+Sheet 2 - Quantities:
+Keywords         | 2024-08-05 | 2024-08-12 | ... | 2025-08-26 |
+pokemon cards    |     18234  |     19567  | ... |     19682  |
+magic gathering  |     12456  |     13234  | ... |     14096  |
+yugioh cards     |       856  |       923  | ... |       732  |
+```
 
 ## API Response Structure
 
@@ -242,10 +294,41 @@ print(df['price'].resample('M').mean())  # Monthly averages
 - Cookies expire periodically and need refreshing
 - Some marketplaces may have different data availability
 
+## Excel Pivot Table Features
+
+### Time Period Aggregation
+The scripts support different time period aggregations:
+- **Weekly** (default): Raw weekly data as returned by API
+- **Monthly**: Averages grouped by month (YYYY-MM format)
+- **Quarterly**: Averages grouped by quarter (YYYY-Q# format)
+
+### Formatting and Styling
+Excel files include:
+- Color-coded headers and keywords column
+- Number formatting (currency for prices, thousands separator for quantities)
+- Auto-adjusted column widths
+- Borders for better readability
+- Conditional formatting for high/low values
+
+### Charts (optional)
+When charts are enabled (default), the Excel includes:
+- Price trend line charts
+- Sales volume trend charts
+- Each keyword as a separate series
+- Proper axis labels and titles
+
+### Use Cases
+1. **Price Comparison**: Compare prices across different products over time
+2. **Trend Analysis**: Identify seasonal patterns and trends
+3. **Market Research**: Analyze market size and competition
+4. **Investment Analysis**: Track collectible card values over time
+5. **Reporting**: Generate professional reports with charts
+
 ## Files
 
-- `ebay_search.py` - Main search script
-- `ebay_batch_search.py` - Batch search with comparison
+- `ebay_search.py` - Main search script with Excel support
+- `ebay_batch_search.py` - Batch search with pivot tables
+- `ebay_excel_utils.py` - Excel pivot table utilities
 - `requirements.txt` - Python dependencies
 - `ebay_cookies.txt.example` - Cookie file template
 - `README_EBAY_SEARCH.md` - This documentation
