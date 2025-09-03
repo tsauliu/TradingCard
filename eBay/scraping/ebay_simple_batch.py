@@ -8,7 +8,7 @@ import pandas as pd
 from datetime import datetime
 from pathlib import Path
 
-def batch_search(keywords_list, cookie_file='ebay_cookies.txt', output_dir='raw_jsons'):
+def batch_search(keywords_list, cookie_file='ebay_cookies.txt', output_dir='raw_jsons', days=1095):
     """Search eBay for keywords and save raw JSONs"""
     
     # Read cookies
@@ -26,16 +26,28 @@ def batch_search(keywords_list, cookie_file='ebay_cookies.txt', output_dir='raw_
     # Create output dir
     Path(output_dir).mkdir(exist_ok=True)
     
+    # Calculate timestamps
+    end_date = datetime.now()
+    start_date = end_date - pd.Timedelta(days=days)
+    end_timestamp = int(end_date.timestamp() * 1000)
+    start_timestamp = int(start_date.timestamp() * 1000)
+    
     # Search each keyword
     for i, keyword in enumerate(keywords_list):
         print(f"[{i+1}/{len(keywords_list)}] Searching: {keyword}")
         
-        # Build URL
+        # Build URL - exactly like nodejs.js
         params = {
             'marketplace': 'EBAY-US',
             'keywords': keyword,
-            'dayRange': 365,
+            'dayRange': days,
+            'endDate': end_timestamp,
+            'startDate': start_timestamp,
+            'categoryId': 0,
+            'offset': 0,
+            'limit': 50,
             'tabName': 'SOLD',
+            'tz': 'Asia/Shanghai',
             'modules': 'metricsTrends'
         }
         
@@ -59,7 +71,7 @@ def batch_search(keywords_list, cookie_file='ebay_cookies.txt', output_dir='raw_
         
         # Wait 10 seconds (except for last item)
         if i < len(keywords_list) - 1:
-            time.sleep(10)
+            time.sleep(60)
 
 
 def jsons_to_excel(json_dir='raw_jsons', output_file='ebay_pivot.xlsx'):
