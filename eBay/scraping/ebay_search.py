@@ -125,9 +125,6 @@ class eBaySearchAPI:
         Returns:
             API response as dictionary
         """
-        # Apply rate limiting BEFORE making the request
-        self._apply_rate_limit()
-        
         # Calculate date range
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
@@ -165,8 +162,11 @@ class eBaySearchAPI:
         
         try:
             # Make request with retry logic
-            max_retries = 3
+            max_retries = 2
             for attempt in range(max_retries):
+                # Apply rate limiting BEFORE each HTTP request (including retries)
+                self._apply_rate_limit()
+                
                 try:
                     response = self.session.get(url, timeout=30)
                     response.raise_for_status()
@@ -178,19 +178,6 @@ class eBaySearchAPI:
                             logger.error("AUTHENTICATION REQUIRED - Cookies have expired!")
                             logger.error("Please update ebay_cookies.txt with fresh cookies from browser")
                             raise RuntimeError("Authentication required - cookies expired. Please refresh cookies from eBay website.")
-                        
-                        # Save raw API response to permanent storage
-                        from pathlib import Path
-                        raw_response_dir = Path("raw_api_responses")
-                        raw_response_dir.mkdir(exist_ok=True)
-                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-                        safe_keywords = "".join(c if c.isalnum() or c in '- ' else '_' for c in keywords)[:50]
-                        raw_file = raw_response_dir / f"{timestamp}_{safe_keywords}_raw.json"
-                        
-                        # Save the raw response text
-                        with open(raw_file, 'w', encoding='utf-8') as f:
-                            f.write(response.text)
-                        logger.debug(f"Raw API response saved: {raw_file.name}")
                         
                         # Split by newlines and parse each non-empty line as JSON
                         lines = response.text.strip().split('\n')
@@ -208,17 +195,25 @@ class eBaySearchAPI:
                                 except json.JSONDecodeError:
                                     logger.debug(f"Could not parse line {i}: {line[:100]}...")
                         
+                        # Save raw API response only on final attempt or successful response
+                        from pathlib import Path
+                        raw_response_dir = Path("raw_api_responses")
+                        raw_response_dir.mkdir(exist_ok=True)
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                        safe_keywords = "".join(c if c.isalnum() or c in '- ' else '_' for c in keywords)[:50]
+                        raw_file = raw_response_dir / f"{timestamp}_{safe_keywords}_raw.json"
+                        
+                        # Save the raw response text
+                        with open(raw_file, 'w', encoding='utf-8') as f:
+                            f.write(response.text)
+                        logger.debug(f"Raw API response saved: {raw_file.name}")
+                        
                         # Add raw response path to data for tracking
                         data['_raw_response_file'] = str(raw_file)
                         
-                        # Check for error in response
+                        # PageErrorModule is normal - eBay API returns both error and data
                         if 'PageErrorModule' in data:
                             logger.error(f"API Error: {data['PageErrorModule']}")
-                            if attempt < max_retries - 1:
-                                logger.info(f"Retrying... (attempt {attempt + 2}/{max_retries})")
-                                time.sleep(2 ** attempt)  # Exponential backoff
-                                continue
-                            return data
                     else:
                         data = {}
                     
@@ -228,7 +223,7 @@ class eBaySearchAPI:
                 except requests.exceptions.RequestException as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"Request failed: {e}. Retrying...")
-                        time.sleep(2 ** attempt)
+                        # No sleep here - rate limiting is handled by _apply_rate_limit()
                     else:
                         raise
                         
@@ -448,6 +443,7 @@ Examples:
     parser.add_argument('--proxy', '-p', default='http://127.0.0.1:20171', help='Proxy URL (default: http://127.0.0.1:20171)')
     parser.add_argument('--no-proxy', action='store_true', help='Disable proxy')
     parser.add_argument('--cookie-file', help='File containing cookies')
+    parser.add_argument('--min-delay', type=float, default=60.0, help='Minimum delay between requests (default: 60s, minimum: 60s)')
     parser.add_argument('--extract-metrics', action='store_true', help='Extract and display key metrics')
     parser.add_argument('--compact', action='store_true', help='Save JSON in compact format')
     parser.add_argument('--excel', action='store_true', help='Save as Excel pivot table instead of JSON')
@@ -488,7 +484,7 @@ Examples:
     proxy = None if args.no_proxy else args.proxy
     
     # Create API client
-    api = eBaySearchAPI(proxy=proxy, cookies=cookies)
+    api = eBaySearchAPI(proxy=proxy, cookies=cookies, min_delay=args.min_delay)
     
     # Perform search
     logger.info(f"Searching eBay for: {args.keywords}")
