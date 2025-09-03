@@ -173,6 +173,12 @@ class eBaySearchAPI:
                     
                     # Parse JSON response - handle multiple JSON objects
                     if response.text:
+                        # Check for authentication required FIRST
+                        if "auth_required" in response.text.lower():
+                            logger.error("AUTHENTICATION REQUIRED - Cookies have expired!")
+                            logger.error("Please update ebay_cookies.txt with fresh cookies from browser")
+                            raise RuntimeError("Authentication required - cookies expired. Please refresh cookies from eBay website.")
+                        
                         # Save raw API response to permanent storage
                         from pathlib import Path
                         raw_response_dir = Path("raw_api_responses")
@@ -226,6 +232,14 @@ class eBaySearchAPI:
                     else:
                         raise
                         
+        except RuntimeError as e:
+            # Re-raise authentication errors so they can be handled upstream
+            if "authentication required" in str(e).lower():
+                raise
+            else:
+                logger.error(f"Search failed: {e}")
+                return {'error': str(e)}
+                
         except Exception as e:
             logger.error(f"Search failed: {e}")
             return {'error': str(e)}

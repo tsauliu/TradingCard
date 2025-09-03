@@ -213,6 +213,32 @@ class eBayBatchSearcher:
                     progress_bar.close()
                 raise
                 
+            except RuntimeError as e:
+                # Check for authentication errors
+                if "authentication required" in str(e).lower():
+                    logger.error("\n" + "="*60)
+                    logger.error("AUTHENTICATION ERROR - STOPPING SEARCH")
+                    logger.error("="*60)
+                    logger.error("Cookies have expired. Please:")
+                    logger.error("1. Open https://www.ebay.com/sh/research in browser")
+                    logger.error("2. Press F12 → Network tab → Search something")
+                    logger.error("3. Find /sh/research/api/search request")
+                    logger.error("4. Copy entire 'cookie' header value")
+                    logger.error("5. Save to ebay_cookies.txt")
+                    logger.error("6. Resume with: python3 ebay_batch_search.py --resume last --file keywords.txt")
+                    logger.error("="*60)
+                    
+                    # Save checkpoint before exiting
+                    resume_manager.save_checkpoint()
+                    if progress_bar:
+                        progress_bar.close()
+                    
+                    # Exit with error
+                    import sys
+                    sys.exit(1)
+                else:
+                    raise  # Re-raise other runtime errors
+                
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"Failed: {keywords} - {error_msg}")
