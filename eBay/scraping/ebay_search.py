@@ -173,6 +173,19 @@ class eBaySearchAPI:
                     
                     # Parse JSON response - handle multiple JSON objects
                     if response.text:
+                        # Save raw API response to permanent storage
+                        from pathlib import Path
+                        raw_response_dir = Path("raw_api_responses")
+                        raw_response_dir.mkdir(exist_ok=True)
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                        safe_keywords = "".join(c if c.isalnum() or c in '- ' else '_' for c in keywords)[:50]
+                        raw_file = raw_response_dir / f"{timestamp}_{safe_keywords}_raw.json"
+                        
+                        # Save the raw response text
+                        with open(raw_file, 'w', encoding='utf-8') as f:
+                            f.write(response.text)
+                        logger.debug(f"Raw API response saved: {raw_file.name}")
+                        
                         # Split by newlines and parse each non-empty line as JSON
                         lines = response.text.strip().split('\n')
                         data = {}
@@ -188,6 +201,9 @@ class eBaySearchAPI:
                                         data[f'module_{i}'] = json_obj
                                 except json.JSONDecodeError:
                                     logger.debug(f"Could not parse line {i}: {line[:100]}...")
+                        
+                        # Add raw response path to data for tracking
+                        data['_raw_response_file'] = str(raw_file)
                         
                         # Check for error in response
                         if 'PageErrorModule' in data:

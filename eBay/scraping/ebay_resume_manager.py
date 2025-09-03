@@ -252,6 +252,10 @@ class ResumeManager:
         self.checkpoints_dir = self.session_path / "checkpoints"
         self.exports_dir = self.session_path / "exports"
         
+        # Add permanent raw JSON storage (never deleted)
+        self.permanent_raw_dir = Path("permanent_raw_json") / self.session_id
+        self.permanent_raw_dir.mkdir(parents=True, exist_ok=True)
+        
         # Session lock
         self.lock = None
         if enable_lock:
@@ -425,6 +429,19 @@ class ResumeManager:
                 'result': result,
                 'error': error
             }, f, indent=2)
+        
+        # Also save a permanent copy of raw response (never deleted)
+        if status == "success" and result:
+            permanent_file = self.permanent_raw_dir / f"{filename}_permanent.json"
+            with open(permanent_file, 'w') as f:
+                json.dump({
+                    'keyword': keyword,
+                    'timestamp': datetime.now().isoformat(),
+                    'session_id': self.session_id,
+                    'raw_response_file': result.get('_raw_response_file'),
+                    'full_result': result
+                }, f, indent=2)
+            logger.debug(f"Permanent copy saved: {permanent_file.name}")
         
         # Check if this keyword already exists (for retries)
         existing_idx = None
@@ -702,7 +719,7 @@ class ResumeManager:
         sys.exit(0)
     
     def cleanup(self, archive: bool = True):
-        """Clean up or archive session"""
+        """Clean up or archive session (permanent_raw_json is NEVER deleted)"""
         if archive:
             # Move to completed directory
             completed_dir = self.temp_dir / "completed"
@@ -714,10 +731,12 @@ class ResumeManager:
             
             shutil.move(str(self.session_path), str(archive_path))
             logger.info(f"Session archived to: {archive_path}")
+            logger.info(f"Permanent raw JSON preserved in: permanent_raw_json/{self.session_id}")
         else:
-            # Delete session
+            # Delete session (but NEVER delete permanent_raw_json)
             shutil.rmtree(self.session_path)
             logger.info(f"Session deleted: {self.session_path}")
+            logger.info(f"Permanent raw JSON preserved in: permanent_raw_json/{self.session_id}")
         
         # Release lock
         if self.lock:
