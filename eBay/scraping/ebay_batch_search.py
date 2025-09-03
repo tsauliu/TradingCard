@@ -466,8 +466,8 @@ Resume Examples:
     parser.add_argument('--days', '-d', type=int, default=1095, help='Number of days to look back')
     parser.add_argument('--marketplace', '-m', default='EBAY-US', help='eBay marketplace')
     parser.add_argument('--limit', '-l', type=int, default=50, help='Results per search')
-    parser.add_argument('--delay', type=float, default=10.0, help='DEPRECATED: Use --min-delay instead')
-    parser.add_argument('--min-delay', type=float, default=10.0, help='Minimum delay between requests (default: 10s, minimum: 10s)')
+    parser.add_argument('--delay', type=float, default=60.0, help='DEPRECATED: Use --min-delay instead')
+    parser.add_argument('--min-delay', type=float, default=60.0, help='Minimum delay between requests (default: 60s, minimum: 60s)')
     
     # Resume and session options
     parser.add_argument('--resume', help='Resume session ID or "last" for most recent')

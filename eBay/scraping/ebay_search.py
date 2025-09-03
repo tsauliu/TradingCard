@@ -45,7 +45,7 @@ class eBaySearchAPI:
         'x-requested-with': 'XMLHttpRequest',
     }
     
-    def __init__(self, proxy: Optional[str] = None, cookies: Optional[str] = None, min_delay: float = 10.0):
+    def __init__(self, proxy: Optional[str] = None, cookies: Optional[str] = None, min_delay: float = 60.0):
         """
         Initialize eBay API client with rate limiting
         

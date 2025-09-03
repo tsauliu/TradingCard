@@ -58,8 +58,8 @@ class SearchRecord:
 class RateLimiter:
     """Intelligent rate limiting with adaptive delays"""
     
-    def __init__(self, min_delay: float = 10.0):
-        self.min_delay = max(10.0, min_delay)  # Enforce 10s minimum
+    def __init__(self, min_delay: float = 60.0):
+        self.min_delay = max(60.0, min_delay)  # Enforce 60s minimum
         self.last_request_time = 0
         self.consecutive_errors = 0
         self.success_streak = 0

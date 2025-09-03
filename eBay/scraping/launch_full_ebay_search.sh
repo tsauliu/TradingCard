@@ -20,8 +20,8 @@ echo "Time: $(date)" | tee -a ${LOG_DIR}/launch.log
 echo "Session: ${SCREEN_NAME}" | tee -a ${LOG_DIR}/launch.log
 echo "Keywords: 76 (deduplicated from keywords.xlsx)" | tee -a ${LOG_DIR}/launch.log
 echo "Period: 4 years (1460 days)" | tee -a ${LOG_DIR}/launch.log
-echo "Min delay: 20 seconds" | tee -a ${LOG_DIR}/launch.log
-echo "Estimated time: 40-60 minutes" | tee -a ${LOG_DIR}/launch.log
+echo "Min delay: 60 seconds" | tee -a ${LOG_DIR}/launch.log
+echo "Estimated time: 76-90 minutes" | tee -a ${LOG_DIR}/launch.log
 echo "========================================" | tee -a ${LOG_DIR}/launch.log
 
 # Launch in screen with comprehensive logging
@@ -40,7 +40,7 @@ screen -dmS ${SCREEN_NAME} -L -Logfile ${LOG_DIR}/screen.log bash -c "
         --file keywords_full_dedup.txt \
         --excel-pivot ${EXCEL_NAME} \
         --days 1460 \
-        --min-delay 20 \
+        --min-delay 60 \
         --checkpoint-every 5 \
         --continue-on-error \
         --retry-failed \
