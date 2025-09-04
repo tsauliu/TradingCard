@@ -5,19 +5,28 @@ import json
 import time
 import requests
 import pandas as pd
+import re
 from datetime import datetime
 from pathlib import Path
 
-def batch_search(keywords_list, cookie_file='ebay_cookies.txt', output_dir=None, days=1095):
+def batch_search(keywords_list, output_dir=None, days=1095):
     """Search eBay for keywords and save raw JSONs"""
     
     # Generate dated folder name if not specified
     if output_dir is None:
         output_dir = datetime.now().strftime('%y%m%d_raw_jsons')
     
-    # Read cookies
-    with open(cookie_file, 'r') as f:
-        cookies = f.read().strip()
+    # Extract cookies from nodejs.js
+    with open('nodejs.js', 'r') as f:
+        nodejs_content = f.read()
+    
+    # Find the cookie line using regex
+    cookie_match = re.search(r'"cookie":\s*"([^"]+)"', nodejs_content)
+    if not cookie_match:
+        print("ERROR: Could not find cookie in nodejs.js")
+        return
+    
+    cookies = cookie_match.group(1)
     
     # Setup session
     session = requests.Session()
