@@ -39,4 +39,7 @@ Thumbs.db
 
 # Temporary files
 *.tmp
-*.temp
+*.tempTCGcsv/service-account.json
+Analysis/service-account.json
+PSA/service-account.json
+TCG/service-account.json
