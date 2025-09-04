@@ -105,7 +105,9 @@ class TCGDataProcessor:
             bigquery.SchemaField("high_sale_price", "FLOAT"),
             bigquery.SchemaField("high_sale_price_with_shipping", "FLOAT"),
             bigquery.SchemaField("transaction_count", "INTEGER"),
-            bigquery.SchemaField("file_processed_at", "TIMESTAMP")
+            bigquery.SchemaField("file_processed_at", "TIMESTAMP"),
+            bigquery.SchemaField("source_file", "STRING"),
+            bigquery.SchemaField("source_directory", "STRING")
         ]
     
     @staticmethod
@@ -141,13 +143,16 @@ class TCGDataProcessor:
         
         return latest_zip
     
-    def extract_zip(self, zip_path: Path, extract_to: str = None, clean_existing: bool = True) -> Tuple[bool, str]:
+    def extract_zip(self, zip_path: Path, extract_to: str = None, clean_existing: bool = True, 
+                    preserve_structure: bool = False, handle_duplicates: str = "rename") -> Tuple[bool, str]:
         """Extract ZIP file to specified directory
         
         Args:
             zip_path: Path to the ZIP file to extract
             extract_to: Directory to extract to (default: self.json_directory)
             clean_existing: Whether to clean existing files in the target directory
+            preserve_structure: Whether to preserve ZIP's directory structure
+            handle_duplicates: How to handle duplicate filenames ('rename', 'skip', 'overwrite')
         
         Returns:
             Tuple of (success: bool, message: str)
@@ -174,6 +179,7 @@ class TCGDataProcessor:
             
             # Extract the ZIP file
             logger.info(f"Extracting {zip_path.name} to {target_dir}")
+            logger.info(f"Options: preserve_structure={preserve_structure}, handle_duplicates={handle_duplicates}")
             
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 # Get info about ZIP contents
@@ -182,25 +188,83 @@ class TCGDataProcessor:
                 
                 logger.info(f"ZIP contains {len(file_list)} files, {len(json_files)} JSON files")
                 
-                # Extract all files
+                # If preserving structure, extract and return
+                if preserve_structure:
+                    # Create subdirectory based on ZIP filename and date
+                    zip_subdir = target_dir / f"{zip_path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    zip_subdir.mkdir(parents=True, exist_ok=True)
+                    zip_ref.extractall(zip_subdir)
+                    
+                    # Count extracted files
+                    extracted_json_files = list(zip_subdir.glob("**/*.json"))
+                    logger.info(f"Preserved structure: {len(extracted_json_files)} JSON files in {zip_subdir}")
+                    return True, f"Extracted {len(extracted_json_files)} JSON files to {zip_subdir} with preserved structure"
+                
+                # Extract all files for flattening
                 zip_ref.extractall(target_dir)
             
-            # If files were extracted to a subdirectory, move them to the target directory
-            # This handles cases where the ZIP contains a folder structure
+            # If files were extracted to a subdirectory, flatten them with duplicate handling
             extracted_subdirs = [d for d in target_dir.iterdir() if d.is_dir()]
             if extracted_subdirs and not list(target_dir.glob("*.json")):
-                # Files might be in a subdirectory
-                logger.info("Checking for JSON files in subdirectories...")
+                # Files might be in subdirectories
+                logger.info("Flattening directory structure with duplicate handling...")
+                
+                # Track files we've seen to detect duplicates
+                seen_files = {}
+                duplicate_count = 0
+                skipped_count = 0
+                renamed_count = 0
+                
                 for subdir in extracted_subdirs:
                     json_files_in_subdir = list(subdir.glob("**/*.json"))
                     if json_files_in_subdir:
-                        logger.info(f"Found {len(json_files_in_subdir)} JSON files in {subdir.name}, moving to target directory")
+                        logger.info(f"Processing {len(json_files_in_subdir)} JSON files from {subdir.name}")
+                        
                         for json_file in json_files_in_subdir:
-                            target_path = target_dir / json_file.name
+                            base_name = json_file.name
+                            
+                            # Check for duplicates
+                            if base_name in seen_files:
+                                duplicate_count += 1
+                                
+                                if handle_duplicates == "skip":
+                                    logger.debug(f"Skipping duplicate: {base_name} from {subdir.name}")
+                                    skipped_count += 1
+                                    continue
+                                elif handle_duplicates == "rename":
+                                    # Create unique name with directory prefix or counter
+                                    if base_name == "_summary.json":
+                                        # Special handling for summary files
+                                        dir_prefix = subdir.name.replace("product_details_", "").replace("2025-09/", "")
+                                        new_name = f"{dir_prefix}_{base_name}"
+                                    else:
+                                        # Add counter for other duplicates
+                                        counter = 1
+                                        new_name = f"{json_file.stem}_{counter}{json_file.suffix}"
+                                        while (target_dir / new_name).exists():
+                                            counter += 1
+                                            new_name = f"{json_file.stem}_{counter}{json_file.suffix}"
+                                    
+                                    target_path = target_dir / new_name
+                                    logger.debug(f"Renaming duplicate: {base_name} -> {new_name}")
+                                    renamed_count += 1
+                                else:  # overwrite
+                                    target_path = target_dir / base_name
+                                    logger.debug(f"Overwriting: {base_name}")
+                            else:
+                                target_path = target_dir / base_name
+                                seen_files[base_name] = str(subdir.name)
+                            
                             shutil.move(str(json_file), str(target_path))
+                        
                         # Clean up empty subdirectory
                         if subdir.exists() and not any(subdir.iterdir()):
-                            subdir.rmdir()
+                            shutil.rmtree(subdir, ignore_errors=True)
+                
+                if duplicate_count > 0:
+                    logger.warning(f"Found {duplicate_count} duplicate filenames: "
+                                 f"renamed={renamed_count}, skipped={skipped_count}, "
+                                 f"overwritten={duplicate_count - renamed_count - skipped_count}")
             
             # Verify extraction
             extracted_json_files = list(target_dir.glob("*.json"))
@@ -216,7 +280,8 @@ class TCGDataProcessor:
         except Exception as e:
             return False, f"Extraction failed: {e}"
     
-    def process_latest_zip(self) -> Tuple[bool, str]:
+    def process_latest_zip(self, preserve_structure: bool = False, 
+                          handle_duplicates: str = "rename") -> Tuple[bool, str]:
         """Find and process the latest ZIP file from upload directory
         
         Returns:
@@ -231,8 +296,12 @@ class TCGDataProcessor:
         if not latest_zip:
             return False, "No ZIP files found to process"
         
-        # Extract ZIP
-        success, message = self.extract_zip(latest_zip)
+        # Extract ZIP with options
+        success, message = self.extract_zip(
+            latest_zip, 
+            preserve_structure=preserve_structure,
+            handle_duplicates=handle_duplicates
+        )
         if not success:
             logger.error(f"Failed to extract ZIP: {message}")
             return False, message
@@ -240,9 +309,23 @@ class TCGDataProcessor:
         logger.info(message)
         return True, f"Ready to process data from {latest_zip.name}"
     
-    def _process_json_file(self, file_path: Path) -> List[Dict[str, Any]]:
-        """Process a single JSON file and return flattened records"""
-        product_id = self._extract_product_id(file_path.name)
+    def _process_json_file(self, file_path: Path, add_metadata: bool = False) -> List[Dict[str, Any]]:
+        """Process a single JSON file and return flattened records
+        
+        Args:
+            file_path: Path to the JSON file
+            add_metadata: Whether to add source file metadata
+        """
+        # Skip summary files by default
+        if "_summary.json" in file_path.name:
+            logger.debug(f"Skipping summary file: {file_path.name}")
+            return []
+        
+        try:
+            product_id = self._extract_product_id(file_path.name)
+        except ValueError as e:
+            logger.debug(f"Skipping non-product file {file_path.name}: {e}")
+            return []
         
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -269,6 +352,11 @@ class TCGDataProcessor:
                 'file_processed_at': datetime.now(timezone.utc)
             }
             
+            # Add source metadata if requested
+            if add_metadata:
+                base_info['source_file'] = str(file_path.relative_to(Path(self.json_directory)))
+                base_info['source_directory'] = file_path.parent.name
+            
             # Process price history buckets
             buckets = result.get('buckets', [])
             if not buckets:
@@ -290,15 +378,30 @@ class TCGDataProcessor:
         
         return records
     
-    def process_all_files(self) -> pd.DataFrame:
-        """Process all JSON files and return a DataFrame"""
+    def process_all_files(self, recursive: bool = True, add_metadata: bool = False) -> pd.DataFrame:
+        """Process all JSON files and return a DataFrame
+        
+        Args:
+            recursive: Whether to scan subdirectories recursively
+            add_metadata: Whether to add source file metadata
+        """
         json_path = Path(self.json_directory)
         
         # Check if directory exists
         if not json_path.exists():
             logger.error(f"JSON directory does not exist: {json_path}")
             return pd.DataFrame()
-        json_files = list(json_path.glob("*.json"))
+        
+        # Get JSON files (recursive or flat)
+        if recursive:
+            json_files = list(json_path.glob("**/*.json"))
+            logger.info(f"Scanning recursively for JSON files in {json_path}")
+        else:
+            json_files = list(json_path.glob("*.json"))
+            logger.info(f"Scanning flat directory for JSON files in {json_path}")
+        
+        # Filter out summary files unless we're processing them
+        json_files = [f for f in json_files if not f.name.startswith('_summary')]
         total_files = len(json_files)
         
         logger.info(f"Found {total_files:,} JSON files to process")
@@ -310,7 +413,7 @@ class TCGDataProcessor:
         
         for json_file in json_files:
             try:
-                records = self._process_json_file(json_file)
+                records = self._process_json_file(json_file, add_metadata=add_metadata)
                 all_records.extend(records)
                 processed_count += 1
                 
@@ -403,12 +506,15 @@ class TCGDataProcessor:
                    f"Time: {elapsed/60:.1f} minutes, "
                    f"Rate: {len(df)/elapsed:.0f} records/sec")
     
-    def run(self, mode: str = "replace", process_zip: bool = False):
+    def run(self, mode: str = "replace", process_zip: bool = False,
+            preserve_structure: bool = False, handle_duplicates: str = "rename"):
         """Main execution method
         
         Args:
             mode: Upload mode - 'replace' or 'append'
             process_zip: Whether to process the latest ZIP file first
+            preserve_structure: Whether to preserve ZIP directory structure
+            handle_duplicates: How to handle duplicate files ('rename', 'skip', 'overwrite')
         """
         logger.info("="*60)
         logger.info("Starting TCG data processing pipeline")
@@ -417,18 +523,24 @@ class TCGDataProcessor:
         try:
             # Process latest ZIP if requested
             if process_zip:
-                success, message = self.process_latest_zip()
+                success, message = self.process_latest_zip(
+                    preserve_structure=preserve_structure,
+                    handle_duplicates=handle_duplicates
+                )
                 if not success:
                     logger.error(f"ZIP processing failed: {message}")
-                    if not Path(self.json_directory).exists() or not list(Path(self.json_directory).glob("*.json")):
+                    if not Path(self.json_directory).exists() or not list(Path(self.json_directory).glob("**/*.json")):
                         logger.error("No JSON files available to process")
                         return
                     logger.warning("Continuing with existing JSON files...")
                 else:
                     logger.info(f"ZIP processing completed: {message}")
             
-            # Process all files
-            df = self.process_all_files()
+            # Process all files (use recursive scanning if structure was preserved)
+            df = self.process_all_files(
+                recursive=preserve_structure or process_zip,
+                add_metadata=preserve_structure
+            )
             
             if not df.empty:
                 # Upload to BigQuery
@@ -461,6 +573,10 @@ def main():
                        help='Process the latest ZIP file from upload directory before uploading')
     parser.add_argument('--zip-only', action='store_true',
                        help='Only extract ZIP file, do not upload to BigQuery')
+    parser.add_argument('--preserve-structure', action='store_true',
+                       help='Preserve directory structure when extracting ZIP files')
+    parser.add_argument('--handle-duplicates', choices=['rename', 'skip', 'overwrite'], 
+                       default='rename', help='How to handle duplicate filenames when flattening')
     
     args = parser.parse_args()
     
@@ -475,7 +591,10 @@ def main():
         
         # If only extracting ZIP
         if args.zip_only:
-            success, message = processor.process_latest_zip()
+            success, message = processor.process_latest_zip(
+                preserve_structure=args.preserve_structure,
+                handle_duplicates=args.handle_duplicates
+            )
             if success:
                 logger.info(f"ZIP extraction completed: {message}")
             else:
@@ -483,7 +602,12 @@ def main():
                 sys.exit(1)
         else:
             # Run full pipeline
-            processor.run(mode=args.mode, process_zip=args.process_zip)
+            processor.run(
+                mode=args.mode, 
+                process_zip=args.process_zip,
+                preserve_structure=args.preserve_structure,
+                handle_duplicates=args.handle_duplicates
+            )
         
     except Exception as e:
         logger.error(f"Failed to run processor: {e}")
