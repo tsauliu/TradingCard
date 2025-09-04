@@ -214,10 +214,10 @@ class PSAScraper:
                 current += 1
                 logger.info(f"📊 [{current}/{total_combinations}] {card_name} - {grade['label']}")
                 
-                # Rate limiting - 60 seconds between every request
+                # Rate limiting - 30 seconds between every request
                 if current > 1:
-                    logger.info("⏱️ Waiting 60 seconds to avoid rate limiting...")
-                    time.sleep(60)
+                    logger.info("⏱️ Waiting 30 seconds to avoid rate limiting...")
+                    time.sleep(30)
                 
                 # Fetch and process
                 raw_data = self.fetch_data(card_id, grade['value'])

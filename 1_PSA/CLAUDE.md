@@ -8,7 +8,7 @@ A comprehensive scraper for PSA (Professional Sports Authenticator) auction pric
 ### What's Working
 - ✅ PSA API endpoint successfully identified and tested
 - ✅ API scraper with BigQuery integration  
-- ✅ Rate limiting (60 seconds between requests)
+- ✅ Rate limiting (30 seconds between requests)
 - ✅ SSL verification bypass for PSA API
 - ✅ Data extraction from HTML tables
 - ✅ Card ID and grade list generation
@@ -112,19 +112,19 @@ python scrape_psa.py test
 ```bash
 python scrape_psa.py
 # Total: 25 cards × 19 grades = 475 API calls
-# Estimated time: ~8 hours (with 60-second delays)
+# Estimated time: ~4 hours (with 30-second delays)
 ```
 
 ### Expected Data Volume
 - **Per card**: ~19 summary records + variable sales records
 - **Total estimated**: 50,000+ records for all cards/grades
 - **API calls**: 475 (25 cards × 19 grades)
-- **Runtime**: ~8 hours with rate limiting (60 seconds between requests)
+- **Runtime**: ~4 hours with rate limiting (30 seconds between requests)
 
 ## Technical Implementation
 
 ### Rate Limiting
-- 60 seconds between every API request (to avoid rate limiting)
+- 30 seconds between every API request (to avoid rate limiting)
 - SSL verification disabled for PSA API
 
 ### Error Handling
@@ -189,7 +189,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 ### Rate Limiting
 **Problem**: PSA may block rapid requests  
-**Solution**: 60-second delays between all requests
+**Solution**: 30-second delays between all requests
 
 ### Data Consistency
 **Problem**: API response structure variations  
