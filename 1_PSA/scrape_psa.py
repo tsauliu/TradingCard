@@ -49,11 +49,13 @@ class PSAScraper:
         
         # Try cache first
         if cache_file.exists():
+            print(f" - Using cached JSON", end="")
             with open(cache_file) as f:
                 data = json.load(f)
-                return data if data else None
+                return (data if data else None, True)  # True = from cache
         
         # Fetch from API
+        print(f" - Fetching from API", end="")
         try:
             resp = self.session.get(f"{self.base_url}/{item_id}/chartData", 
                                    params={'g': grade, 'time_range': 0}, timeout=30)
@@ -61,9 +63,10 @@ class PSAScraper:
             with open(cache_file, 'w') as f:
                 json.dump(data, f, indent=2)
             time.sleep(30)  # Rate limit after API call
-            return data if data else None
-        except:
-            return None
+            return (data if data else None, False)  # False = fresh API call
+        except Exception as e:
+            print(f" - API error: {e}", end="")
+            return (None, False)
     
     def process(self, data, item_id, grade, card_name):
         """Convert API data to records"""
@@ -183,11 +186,15 @@ class PSAScraper:
         total_grades = len(grades)
         total_combinations = total_cards * total_grades
         
-        print(f"Starting scraper: {total_cards} cards × {total_grades} grades = {total_combinations} API calls")
-        print(f"Estimated runtime: ~{total_combinations * 30 / 60:.1f} minutes")
+        print(f"Starting scraper: {total_cards} cards × {total_grades} grades = {total_combinations} combinations")
+        print(f"Checking cache directory: {self.cache_dir}")
+        print(f"Note: Cached files will be skipped (no API calls or delays)")
+        print(f"{'='*50}")
         
         all_records = []
         completed = 0
+        api_calls_made = 0
+        cache_hits = 0
         
         for card_idx, (_, card) in enumerate(cards.iterrows(), 1):
             card_id = str(card['card_id'])
@@ -200,28 +207,37 @@ class PSAScraper:
                 print(f"  [{completed}/{total_combinations}] Grade {grade} - {progress:.1f}% complete", end="")
                 
                 # Fetch and process
-                data = self.fetch(card_id, grade)
+                data, from_cache = self.fetch(card_id, grade)
+                
+                if from_cache:
+                    cache_hits += 1
+                else:
+                    api_calls_made += 1
                 
                 if data:
                     records = self.process(data, card_id, grade, card_name)
                     all_records.extend(records)
                     print(f" - {len(records)} records extracted")
-                    
-                    # Batch upload
-                    if len(all_records) >= 100:
-                        print(f"  Uploading batch of {len(all_records)} records to BigQuery...")
-                        self.upload(all_records)
-                        all_records = []
                 else:
                     print(" - No data")
         
-        # Upload remaining
+        # Upload all records at the end
+        print(f"\n{'='*50}")
+        print(f"All data collection complete. Uploading to BigQuery...")
+        
         if all_records:
-            print(f"\nUploading final batch of {len(all_records)} records to BigQuery...")
             self.upload(all_records)
+            print(f"✓ Successfully uploaded {len(all_records)} total records to BigQuery")
+        else:
+            print("No records to upload")
         
         print(f"\n{'='*50}")
-        print(f"Scraping complete! Processed {total_combinations} combinations")
+        print(f"Scraping complete!")
+        print(f"  • Combinations processed: {total_combinations}")
+        print(f"  • API calls made: {api_calls_made}")
+        print(f"  • Cache hits: {cache_hits}")
+        print(f"  • Total records uploaded: {len(all_records)}")
+        print(f"  • Estimated time saved: ~{cache_hits * 30 / 60:.1f} minutes")
         print(f"{'='*50}")
 
 if __name__ == "__main__":
