@@ -7,9 +7,8 @@ A comprehensive scraper for PSA (Professional Sports Authenticator) auction pric
 
 ### What's Working
 - ✅ PSA API endpoint successfully identified and tested
-- ✅ Selenium web scraper with Chrome/ChromeDriver setup
-- ✅ API scraper with BigQuery integration
-- ✅ Rate limiting (10 seconds between requests)
+- ✅ API scraper with BigQuery integration  
+- ✅ Rate limiting (60 seconds between requests)
 - ✅ SSL verification bypass for PSA API
 - ✅ Data extraction from HTML tables
 - ✅ Card ID and grade list generation
@@ -24,24 +23,15 @@ Successfully scraped **1,361 records** from item ID 544027 (Charizard-Holo) for 
 ## Files Structure
 
 ### Core Scripts
-- `scrape_psa_api.py` - **Main API scraper with BigQuery integration**
-- `scrape_psa_selenium.py` - Selenium-based web scraper (backup method)
-- `extract_ids.py` - Extract card IDs from HTML tables
-- `save_psa_grades.py` - Generate PSA grades reference list
+- `scrape_psa.py` - **Main API scraper with BigQuery integration**
 
 ### Configuration
-- `.env` - Environment variables (copied from TCG/)
-- `service-account.json` - BigQuery credentials (copied from TCG/)
+- `.env` - Environment variables
+- `service-account.json` - BigQuery credentials
 
 ### Data Files
 - `psa_card_list.csv` - 25 Pokemon cards with IDs ready for scraping
 - `psa_grades_list.csv` - 19 PSA grade levels (10 to 1 + Auth)
-- `psa_test_544027.csv` - Test results from Charizard-Holo
-- `list.html` - Source HTML table with card information
-
-### Logs
-- `psa_api_scraper.log` - API scraper execution logs
-- `psa_scraper_selenium.log` - Selenium scraper logs
 
 ## Data Sources
 
@@ -112,38 +102,29 @@ PARTITION BY DATE(scraped_at)
 
 ## Usage Instructions
 
-### Quick Test (Single Card)
+### Quick Test (Single Card, 3 Grades)
 ```bash
-python scrape_psa_api.py
-# Tests with Charizard-Holo (544027) for first 3 grades
+python scrape_psa.py test
+# Tests with first card for first 3 grades
 ```
 
-### Full Production Run
-1. **Update scraper for all grades**:
-   ```python
-   # In scrape_psa_api.py, change run_single_item_test():
-   # Remove: self.grades = self.grades[:3]
-   # This will process all 19 grades
-   ```
-
-2. **Process all cards**:
-   ```python
-   # Add loop for all card IDs from psa_card_list.csv
-   # Total: 25 cards × 19 grades = 475 API calls
-   # Estimated time: ~79 minutes (with 10-second delays)
-   ```
+### Full Production Run (All 25 Cards, 19 Grades)
+```bash
+python scrape_psa.py
+# Total: 25 cards × 19 grades = 475 API calls
+# Estimated time: ~8 hours (with 60-second delays)
+```
 
 ### Expected Data Volume
 - **Per card**: ~19 summary records + variable sales records
 - **Total estimated**: 50,000+ records for all cards/grades
 - **API calls**: 475 (25 cards × 19 grades)
-- **Runtime**: ~1.3 hours with rate limiting
+- **Runtime**: ~8 hours with rate limiting (60 seconds between requests)
 
 ## Technical Implementation
 
 ### Rate Limiting
-- 10 seconds between grade requests
-- 3 retry attempts with exponential backoff
+- 60 seconds between every API request (to avoid rate limiting)
 - SSL verification disabled for PSA API
 
 ### Error Handling
@@ -165,17 +146,9 @@ python scrape_psa_api.py
 
 ## Installation Requirements
 
-### System Dependencies
-```bash
-# Chrome browser and ChromeDriver (for Selenium backup)
-sudo apt install google-chrome-stable
-wget https://storage.googleapis.com/chrome-for-testing-public/139.0.7258.138/linux64/chromedriver-linux64.zip
-```
-
 ### Python Packages
 ```bash
-pip install requests pandas google-cloud-bigquery python-dotenv
-pip install selenium beautifulsoup4 urllib3  # For backup methods
+pip install requests pandas google-cloud-bigquery python-dotenv urllib3
 ```
 
 ### Environment Setup
@@ -216,7 +189,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 ### Rate Limiting
 **Problem**: PSA may block rapid requests  
-**Solution**: 10-second delays + retry logic implemented
+**Solution**: 60-second delays between all requests
 
 ### Data Consistency
 **Problem**: API response structure variations  
