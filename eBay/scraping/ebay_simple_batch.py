@@ -8,8 +8,12 @@ import pandas as pd
 from datetime import datetime
 from pathlib import Path
 
-def batch_search(keywords_list, cookie_file='ebay_cookies.txt', output_dir='raw_jsons', days=1095):
+def batch_search(keywords_list, cookie_file='ebay_cookies.txt', output_dir=None, days=1095):
     """Search eBay for keywords and save raw JSONs"""
+    
+    # Generate dated folder name if not specified
+    if output_dir is None:
+        output_dir = datetime.now().strftime('%y%m%d_raw_jsons')
     
     # Read cookies
     with open(cookie_file, 'r') as f:
@@ -74,8 +78,21 @@ def batch_search(keywords_list, cookie_file='ebay_cookies.txt', output_dir='raw_
             time.sleep(60)
 
 
-def jsons_to_excel(json_dir='raw_jsons', output_file='ebay_pivot.xlsx'):
+def jsons_to_excel(json_dir=None, output_file=None):
     """Combine JSON files into Excel pivot table"""
+    
+    # Auto-detect latest json dir if not specified
+    if json_dir is None:
+        # Find most recent YYMMDD_raw_jsons folder
+        json_dirs = sorted([d for d in Path('.').glob('*_raw_jsons') if d.is_dir()], reverse=True)
+        if json_dirs:
+            json_dir = str(json_dirs[0])
+        else:
+            json_dir = 'raw_jsons'  # fallback
+    
+    # Generate timestamped output file if not specified
+    if output_file is None:
+        output_file = datetime.now().strftime('%Y%m%d%H%M%S_ebay_pivot.xlsx')
     
     all_data = {}
     
@@ -147,9 +164,9 @@ def jsons_to_excel(json_dir='raw_jsons', output_file='ebay_pivot.xlsx'):
 
 # Example usage:
 if __name__ == '__main__':
-    # Example 1: Search keywords
+    # Example 1: Search keywords (auto-generates YYMMDD_raw_jsons folder)
     keywords = ['pokemon cards', 'magic the gathering', 'yugioh cards']
     batch_search(keywords)
     
-    # Example 2: Convert to Excel
+    # Example 2: Convert to Excel (auto-generates YYYYMMDDHHMMSS_ebay_pivot.xlsx)
     jsons_to_excel()
