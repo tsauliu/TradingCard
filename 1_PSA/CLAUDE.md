@@ -78,27 +78,40 @@ https://www.psacard.com/api/psa/auctionprices/spec/{item_id}/chartData?g={grade}
 ## BigQuery Schema
 
 ### Table: `tcg_data.psa_auction_prices`
+**Current Records**: ~30,000 (10 cards × 19 grades scraped)
+
 ```sql
 CREATE TABLE tcg_data.psa_auction_prices (
-  item_id STRING NOT NULL,
-  grade STRING NOT NULL,
-  grade_label STRING,
-  record_type STRING NOT NULL,  -- 'summary' or 'sale'
-  total_sales_count INTEGER,
-  average_price FLOAT,
-  median_price FLOAT,
-  min_price FLOAT,
-  max_price FLOAT,
-  std_deviation FLOAT,
-  date_range_start STRING,
-  date_range_end STRING,
-  sale_date STRING,
-  sale_price FLOAT,
-  scraped_at TIMESTAMP NOT NULL,
-  data_source STRING NOT NULL
+  item_id STRING,              -- PSA card specification ID
+  grade STRING,                -- Grade value (10, 9, 8.5, etc.)
+  grade_label STRING,          -- Grade label (PSA 10, PSA 9, etc.)
+  record_type STRING,          -- 'summary' or 'sale'
+  total_sales_count INTEGER,   -- Total number of sales (summary records)
+  average_price FLOAT,         -- Average sale price (summary records)
+  median_price FLOAT,          -- Median sale price (summary records)
+  min_price FLOAT,             -- Minimum sale price (summary records)
+  max_price FLOAT,             -- Maximum sale price (summary records)
+  std_deviation FLOAT,         -- Standard deviation of prices
+  date_range_start STRING,     -- Start date of data range
+  date_range_end STRING,       -- End date of data range
+  sale_date STRING,            -- Individual sale date (sale records)
+  sale_price FLOAT,            -- Individual sale price (sale records)
+  scraped_at TIMESTAMP,        -- When data was scraped
+  data_source STRING,          -- Source of data ('psa_api')
+  card_name STRING,            -- Card name from CSV
+  card_set STRING,             -- Card set (e.g., '1999-pokemon-game')
+  card_year INTEGER,           -- Year of card release
+  card_variant STRING,         -- Card variant if applicable
+  psa_url STRING,              -- URL path to PSA auction page
+  lifecycle_sales_count INTEGER -- Total sales for this card/grade
 )
 PARTITION BY DATE(scraped_at)
 ```
+
+**Note**: Fields populated by scraper:
+- From API: `item_id`, `grade`, `record_type`, `total_sales_count`, `sale_date`, `sale_price`, `scraped_at`
+- From CSV: `card_name`
+- Not currently populated: All other fields (NULL in current implementation)
 
 ## Usage Instructions
 

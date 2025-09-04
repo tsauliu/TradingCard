@@ -80,15 +80,25 @@ class PSAScraper:
                 'item_id': item_id,
                 'card_name': card_name,
                 'grade': grade,
+                'grade_label': f'PSA {grade}',
                 'record_type': 'summary',
                 'total_sales_count': summary.get('numberOfSales'),
                 'average_price': summary.get('averagePrice'),
                 'median_price': summary.get('medianPrice'),
                 'min_price': summary.get('minPrice'),
                 'max_price': summary.get('maxPrice'),
+                'std_deviation': None,
+                'date_range_start': None,
+                'date_range_end': None,
                 'sale_date': None,
                 'sale_price': None,
-                'scraped_at': timestamp
+                'scraped_at': timestamp,
+                'data_source': 'psa_api',
+                'card_set': None,
+                'card_year': None,
+                'card_variant': None,
+                'psa_url': None,
+                'lifecycle_sales_count': summary.get('numberOfSales')
             })
         
         # Individual sales
@@ -97,10 +107,25 @@ class PSAScraper:
                 'item_id': item_id,
                 'card_name': card_name,
                 'grade': grade,
+                'grade_label': f'PSA {grade}',
                 'record_type': 'sale',
+                'total_sales_count': None,
+                'average_price': None,
+                'median_price': None,
+                'min_price': None,
+                'max_price': None,
+                'std_deviation': None,
+                'date_range_start': None,
+                'date_range_end': None,
                 'sale_date': sale.get('dateOfSale'),
                 'sale_price': sale.get('price'),
-                'scraped_at': timestamp
+                'scraped_at': timestamp,
+                'data_source': 'psa_api',
+                'card_set': None,
+                'card_year': None,
+                'card_variant': None,
+                'psa_url': None,
+                'lifecycle_sales_count': None
             })
         
         return records
@@ -115,18 +140,28 @@ class PSAScraper:
             self.bq_client.get_table(self.table_id)
         except:
             schema = [
-                bigquery.SchemaField("item_id", "STRING", mode="REQUIRED"),
-                bigquery.SchemaField("card_name", "STRING"),
+                bigquery.SchemaField("item_id", "STRING"),
                 bigquery.SchemaField("grade", "STRING"),
+                bigquery.SchemaField("grade_label", "STRING"),
                 bigquery.SchemaField("record_type", "STRING"),
                 bigquery.SchemaField("total_sales_count", "INTEGER"),
                 bigquery.SchemaField("average_price", "FLOAT"),
                 bigquery.SchemaField("median_price", "FLOAT"),
                 bigquery.SchemaField("min_price", "FLOAT"),
                 bigquery.SchemaField("max_price", "FLOAT"),
+                bigquery.SchemaField("std_deviation", "FLOAT"),
+                bigquery.SchemaField("date_range_start", "STRING"),
+                bigquery.SchemaField("date_range_end", "STRING"),
                 bigquery.SchemaField("sale_date", "STRING"),
                 bigquery.SchemaField("sale_price", "FLOAT"),
                 bigquery.SchemaField("scraped_at", "TIMESTAMP"),
+                bigquery.SchemaField("data_source", "STRING"),
+                bigquery.SchemaField("card_name", "STRING"),
+                bigquery.SchemaField("card_set", "STRING"),
+                bigquery.SchemaField("card_year", "INTEGER"),
+                bigquery.SchemaField("card_variant", "STRING"),
+                bigquery.SchemaField("psa_url", "STRING"),
+                bigquery.SchemaField("lifecycle_sales_count", "INTEGER"),
             ]
             table = bigquery.Table(self.table_id, schema=schema)
             table.time_partitioning = bigquery.TimePartitioning(
