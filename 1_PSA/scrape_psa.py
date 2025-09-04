@@ -102,7 +102,9 @@ class PSAScraper:
             })
         
         # Individual sales
-        for sale in data.get('historicalAuctionInfo', {}).get('highestDailySales', []):
+        auction_info = data.get('historicalAuctionInfo') or {}
+        sales = auction_info.get('highestDailySales') or []
+        for sale in sales:
             records.append({
                 'item_id': item_id,
                 'card_name': card_name,
