@@ -8,8 +8,10 @@ import os
 import re
 import logging
 import sys
+import zipfile
+import shutil
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timezone
 import time
 
@@ -37,22 +39,32 @@ class TCGDataProcessor:
     """Main class for processing TCG data and uploading to BigQuery"""
     
     def __init__(self, project_id: str = None, dataset_id: str = "tcg_data", 
-                 table_id: str = "tcg_prices_bda", json_directory: str = "./product_details"):
-        """Initialize the processor with BigQuery configuration"""
+                 table_id: str = "tcg_prices_bda", json_directory: str = "./product_details",
+                 upload_directory: str = None):
+        """Initialize the processor with BigQuery configuration
+        
+        Args:
+            project_id: GCP project ID
+            dataset_id: BigQuery dataset ID
+            table_id: BigQuery table ID
+            json_directory: Directory containing JSON files to process
+            upload_directory: Directory to scan for ZIP files (default: ~/fileuploader/uploads)
+        """
         self.project_id = project_id or os.getenv("GOOGLE_CLOUD_PROJECT")
         self.dataset_id = dataset_id or os.getenv("BIGQUERY_DATASET", "tcg_data")
         self.table_id = table_id
         self.json_directory = json_directory
+        self.upload_directory = Path(upload_directory or "~/fileuploader/uploads").expanduser()
         
         # Validate configuration
         if not self.project_id:
             raise ValueError("GOOGLE_CLOUD_PROJECT environment variable not set")
         
-        if not os.path.exists(self.json_directory):
-            raise ValueError(f"Directory {self.json_directory} does not exist")
+        # Don't validate json_directory yet - it might be created from ZIP extraction
         
         logger.info(f"Configuration: Project={self.project_id}, Dataset={self.dataset_id}, Table={self.table_id}")
         logger.info(f"JSON Directory: {self.json_directory}")
+        logger.info(f"Upload Directory: {self.upload_directory}")
         
         # Initialize BigQuery client
         self.client = bigquery.Client(project=self.project_id)
@@ -103,6 +115,130 @@ class TCGDataProcessor:
         if match:
             return match.group(1)
         raise ValueError(f"Invalid filename format: {filename}")
+    
+    def find_latest_zip(self) -> Optional[Path]:
+        """Find the most recent ZIP file in the upload directory
+        
+        Returns:
+            Path to the most recent ZIP file, or None if no ZIP files found
+        """
+        if not self.upload_directory.exists():
+            logger.warning(f"Upload directory does not exist: {self.upload_directory}")
+            return None
+        
+        zip_files = list(self.upload_directory.glob("*.zip"))
+        
+        if not zip_files:
+            logger.warning(f"No ZIP files found in {self.upload_directory}")
+            return None
+        
+        # Sort by modification time (most recent first)
+        zip_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        latest_zip = zip_files[0]
+        
+        logger.info(f"Found {len(zip_files)} ZIP file(s)")
+        logger.info(f"Most recent: {latest_zip.name} (modified: {datetime.fromtimestamp(latest_zip.stat().st_mtime)})")
+        
+        return latest_zip
+    
+    def extract_zip(self, zip_path: Path, extract_to: str = None, clean_existing: bool = True) -> Tuple[bool, str]:
+        """Extract ZIP file to specified directory
+        
+        Args:
+            zip_path: Path to the ZIP file to extract
+            extract_to: Directory to extract to (default: self.json_directory)
+            clean_existing: Whether to clean existing files in the target directory
+        
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        if not zip_path.exists():
+            return False, f"ZIP file does not exist: {zip_path}"
+        
+        if not zipfile.is_zipfile(zip_path):
+            return False, f"File is not a valid ZIP: {zip_path}"
+        
+        target_dir = Path(extract_to or self.json_directory)
+        
+        try:
+            # Create target directory if it doesn't exist
+            target_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Clean existing JSON files if requested
+            if clean_existing and target_dir.exists():
+                existing_files = list(target_dir.glob("*.json"))
+                if existing_files:
+                    logger.info(f"Cleaning {len(existing_files)} existing JSON files from {target_dir}")
+                    for file in existing_files:
+                        file.unlink()
+            
+            # Extract the ZIP file
+            logger.info(f"Extracting {zip_path.name} to {target_dir}")
+            
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                # Get info about ZIP contents
+                file_list = zip_ref.namelist()
+                json_files = [f for f in file_list if f.endswith('.json')]
+                
+                logger.info(f"ZIP contains {len(file_list)} files, {len(json_files)} JSON files")
+                
+                # Extract all files
+                zip_ref.extractall(target_dir)
+            
+            # If files were extracted to a subdirectory, move them to the target directory
+            # This handles cases where the ZIP contains a folder structure
+            extracted_subdirs = [d for d in target_dir.iterdir() if d.is_dir()]
+            if extracted_subdirs and not list(target_dir.glob("*.json")):
+                # Files might be in a subdirectory
+                logger.info("Checking for JSON files in subdirectories...")
+                for subdir in extracted_subdirs:
+                    json_files_in_subdir = list(subdir.glob("**/*.json"))
+                    if json_files_in_subdir:
+                        logger.info(f"Found {len(json_files_in_subdir)} JSON files in {subdir.name}, moving to target directory")
+                        for json_file in json_files_in_subdir:
+                            target_path = target_dir / json_file.name
+                            shutil.move(str(json_file), str(target_path))
+                        # Clean up empty subdirectory
+                        if subdir.exists() and not any(subdir.iterdir()):
+                            subdir.rmdir()
+            
+            # Verify extraction
+            extracted_json_files = list(target_dir.glob("*.json"))
+            
+            if not extracted_json_files:
+                return False, f"No JSON files found after extraction"
+            
+            logger.info(f"Successfully extracted {len(extracted_json_files)} JSON files")
+            return True, f"Extracted {len(extracted_json_files)} JSON files from {zip_path.name}"
+            
+        except zipfile.BadZipFile as e:
+            return False, f"Corrupt ZIP file: {e}"
+        except Exception as e:
+            return False, f"Extraction failed: {e}"
+    
+    def process_latest_zip(self) -> Tuple[bool, str]:
+        """Find and process the latest ZIP file from upload directory
+        
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        logger.info("="*60)
+        logger.info("Looking for latest ZIP file to process")
+        logger.info("="*60)
+        
+        # Find latest ZIP
+        latest_zip = self.find_latest_zip()
+        if not latest_zip:
+            return False, "No ZIP files found to process"
+        
+        # Extract ZIP
+        success, message = self.extract_zip(latest_zip)
+        if not success:
+            logger.error(f"Failed to extract ZIP: {message}")
+            return False, message
+        
+        logger.info(message)
+        return True, f"Ready to process data from {latest_zip.name}"
     
     def _process_json_file(self, file_path: Path) -> List[Dict[str, Any]]:
         """Process a single JSON file and return flattened records"""
@@ -157,6 +293,11 @@ class TCGDataProcessor:
     def process_all_files(self) -> pd.DataFrame:
         """Process all JSON files and return a DataFrame"""
         json_path = Path(self.json_directory)
+        
+        # Check if directory exists
+        if not json_path.exists():
+            logger.error(f"JSON directory does not exist: {json_path}")
+            return pd.DataFrame()
         json_files = list(json_path.glob("*.json"))
         total_files = len(json_files)
         
@@ -262,13 +403,30 @@ class TCGDataProcessor:
                    f"Time: {elapsed/60:.1f} minutes, "
                    f"Rate: {len(df)/elapsed:.0f} records/sec")
     
-    def run(self, mode: str = "replace"):
-        """Main execution method"""
+    def run(self, mode: str = "replace", process_zip: bool = False):
+        """Main execution method
+        
+        Args:
+            mode: Upload mode - 'replace' or 'append'
+            process_zip: Whether to process the latest ZIP file first
+        """
         logger.info("="*60)
         logger.info("Starting TCG data processing pipeline")
         logger.info("="*60)
         
         try:
+            # Process latest ZIP if requested
+            if process_zip:
+                success, message = self.process_latest_zip()
+                if not success:
+                    logger.error(f"ZIP processing failed: {message}")
+                    if not Path(self.json_directory).exists() or not list(Path(self.json_directory).glob("*.json")):
+                        logger.error("No JSON files available to process")
+                        return
+                    logger.warning("Continuing with existing JSON files...")
+                else:
+                    logger.info(f"ZIP processing completed: {message}")
+            
             # Process all files
             df = self.process_all_files()
             
@@ -297,6 +455,12 @@ def main():
     parser.add_argument('--directory', help='JSON files directory', default='./product_details')
     parser.add_argument('--mode', choices=['replace', 'append'], default='replace',
                        help='Upload mode: replace all data or append')
+    parser.add_argument('--upload-dir', help='Directory containing ZIP files to process',
+                       default='~/fileuploader/uploads')
+    parser.add_argument('--process-zip', action='store_true',
+                       help='Process the latest ZIP file from upload directory before uploading')
+    parser.add_argument('--zip-only', action='store_true',
+                       help='Only extract ZIP file, do not upload to BigQuery')
     
     args = parser.parse_args()
     
@@ -305,9 +469,21 @@ def main():
             project_id=args.project,
             dataset_id=args.dataset,
             table_id=args.table,
-            json_directory=args.directory
+            json_directory=args.directory,
+            upload_directory=args.upload_dir
         )
-        processor.run(mode=args.mode)
+        
+        # If only extracting ZIP
+        if args.zip_only:
+            success, message = processor.process_latest_zip()
+            if success:
+                logger.info(f"ZIP extraction completed: {message}")
+            else:
+                logger.error(f"ZIP extraction failed: {message}")
+                sys.exit(1)
+        else:
+            # Run full pipeline
+            processor.run(mode=args.mode, process_zip=args.process_zip)
         
     except Exception as e:
         logger.error(f"Failed to run processor: {e}")

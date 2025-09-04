@@ -111,12 +111,20 @@ start_processor() {
     # Parse command line arguments
     MODE="${1:-replace}"
     DIRECTORY="${2:-./product_details}"
+    PROCESS_ZIP="${3:-no}"
     
     print_info "Mode: $MODE"
     print_info "Data directory: $DIRECTORY"
+    print_info "Process ZIP: $PROCESS_ZIP"
     
-    # Create the command to run
-    CMD="python3 $PYTHON_SCRIPT --mode $MODE --directory $DIRECTORY 2>&1 | tee $LOG_FILE"
+    # Build command based on options
+    if [ "$PROCESS_ZIP" = "yes" ] || [ "$PROCESS_ZIP" = "true" ]; then
+        CMD="python3 $PYTHON_SCRIPT --mode $MODE --directory $DIRECTORY --process-zip 2>&1 | tee $LOG_FILE"
+    elif [ "$PROCESS_ZIP" = "zip-only" ]; then
+        CMD="python3 $PYTHON_SCRIPT --directory $DIRECTORY --zip-only 2>&1 | tee $LOG_FILE"
+    else
+        CMD="python3 $PYTHON_SCRIPT --mode $MODE --directory $DIRECTORY 2>&1 | tee $LOG_FILE"
+    fi
     
     # Start screen session
     screen -dmS "$SCREEN_NAME" bash -c "$CMD"
@@ -149,20 +157,29 @@ show_usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  start [mode] [directory]  Start the processor (mode: replace/append, default: replace)"
-    echo "  stop                      Stop the processor"
-    echo "  status                    Check processor status"
-    echo "  logs                      View recent logs"
-    echo "  attach                    Attach to screen session"
-    echo "  help                      Show this help message"
+    echo "  start [mode] [directory] [zip]  Start the processor"
+    echo "                                   mode: replace/append (default: replace)"
+    echo "                                   directory: JSON directory (default: ./product_details)"
+    echo "                                   zip: yes/no/zip-only (default: no)"
+    echo "                                        yes = process ZIP then upload"
+    echo "                                        no = process existing JSONs only"
+    echo "                                        zip-only = extract ZIP only, no upload"
+    echo "  extract                          Extract latest ZIP file only"
+    echo "  stop                             Stop the processor"
+    echo "  status                           Check processor status"
+    echo "  logs                             View recent logs"
+    echo "  attach                           Attach to screen session"
+    echo "  help                             Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0 start                  # Start with default settings (replace mode)"
-    echo "  $0 start append           # Start in append mode"
-    echo "  $0 start replace /data    # Start with custom data directory"
-    echo "  $0 stop                   # Stop the processor"
-    echo "  $0 status                 # Check if processor is running"
-    echo "  $0 logs                   # View recent log files"
+    echo "  $0 start                         # Start with default settings (replace mode)"
+    echo "  $0 start append                  # Start in append mode"
+    echo "  $0 start replace /data           # Start with custom data directory"
+    echo "  $0 start replace ./product_details yes  # Process ZIP then upload"
+    echo "  $0 extract                       # Extract latest ZIP only"
+    echo "  $0 stop                          # Stop the processor"
+    echo "  $0 status                        # Check if processor is running"
+    echo "  $0 logs                          # View recent log files"
 }
 
 # Main execution
@@ -170,7 +187,12 @@ case "${1:-start}" in
     start)
         check_requirements
         check_existing_session
-        start_processor "${2:-replace}" "${3:-./product_details}"
+        start_processor "${2:-replace}" "${3:-./product_details}" "${4:-no}"
+        ;;
+    extract)
+        check_requirements
+        print_info "Extracting latest ZIP file..."
+        python3 "$PYTHON_SCRIPT" --zip-only
         ;;
     stop)
         print_info "Stopping processor..."
