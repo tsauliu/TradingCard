@@ -12,6 +12,7 @@ from datetime import datetime
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import List, Dict, Optional
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
@@ -40,6 +41,10 @@ class PSAScraper:
             'Referer': 'https://www.psacard.com/auctionprices'
         })
         self.session.verify = False
+        
+        # Create temp directory for JSON caching
+        self.temp_dir = self.create_temp_directory()
+        logger.info(f"📁 Using cache directory: {self.temp_dir}")
         
         # Load card list
         self.cards = pd.read_csv('psa_card_list.csv')
@@ -73,8 +78,37 @@ class PSAScraper:
         self.table_id = 'psa_auction_prices'
         self.client = bigquery.Client(project=self.project_id)
     
-    def fetch_data(self, item_id: str, grade: str) -> Optional[Dict]:
-        """Fetch auction data from PSA API"""
+    def create_temp_directory(self) -> Path:
+        """Create temp directory with YYMMDD format"""
+        date_str = datetime.now().strftime("%y%m%d")
+        temp_dir = Path(f"temp_{date_str}")
+        temp_dir.mkdir(exist_ok=True)
+        return temp_dir
+    
+    def fetch_data(self, item_id: str, grade: str) -> tuple[Optional[Dict], bool]:
+        """Fetch auction data from PSA API or load from cache
+        Returns: (data, from_cache) - data is the JSON response, from_cache is True if loaded from cache
+        """
+        # Create filename for JSON cache
+        json_filename = self.temp_dir / f"{item_id}_{grade}.json"
+        
+        # Check if JSON file already exists
+        if json_filename.exists():
+            logger.info(f"📂 Loading cached data: {json_filename.name}")
+            try:
+                with open(json_filename, 'r') as f:
+                    data = json.load(f)
+                # Check if it's empty (404 case)
+                if not data:
+                    logger.info(f"⚠️ Cached empty result for ID {item_id}, Grade {grade}")
+                    return None, True
+                logger.info(f"✅ Cached ID {item_id}, Grade {grade}: {len(data.get('highestDailySales', []))} sales")
+                return data, True
+            except Exception as e:
+                logger.error(f"❌ Failed to load cache {json_filename}: {e}")
+                # Continue to fetch from API if cache load fails
+        
+        # Fetch from API if not cached
         url = f"{self.base_url}/{item_id}/chartData"
         params = {'g': grade, 'time_range': 0}
         
@@ -82,14 +116,29 @@ class PSAScraper:
             response = self.session.get(url, params=params, timeout=30)
             if response.status_code == 200:
                 data = response.json()
-                logger.info(f"✅ ID {item_id}, Grade {grade}: {len(data.get('highestDailySales', []))} sales")
-                return data
+                
+                # Save response to JSON file
+                try:
+                    with open(json_filename, 'w') as f:
+                        json.dump(data, f, indent=2)
+                    logger.info(f"💾 Saved response to: {json_filename.name}")
+                except Exception as e:
+                    logger.error(f"⚠️ Failed to save cache {json_filename}: {e}")
+                
+                logger.info(f"✅ API ID {item_id}, Grade {grade}: {len(data.get('highestDailySales', []))} sales")
+                return data, False
             elif response.status_code == 404:
                 logger.warning(f"⚠️ No data for ID {item_id}, Grade {grade}")
-                return None
+                # Save empty result to avoid re-fetching
+                try:
+                    with open(json_filename, 'w') as f:
+                        json.dump({}, f)
+                except:
+                    pass
+                return None, False
         except Exception as e:
-            logger.error(f"❌ Failed ID {item_id}, Grade {grade}: {e}")
-            return None
+            logger.error(f"❌ Failed API call ID {item_id}, Grade {grade}: {e}")
+            return None, False
     
     def process_data(self, raw_data: Dict, item_id: str, grade: str, card_name: str) -> List[Dict]:
         """Process API response into structured records"""
@@ -205,6 +254,10 @@ class PSAScraper:
         all_data = []
         total_combinations = len(cards_to_scrape) * len(grades_to_scrape)
         current = 0
+        cache_hits = 0
+        api_calls = 0
+        
+        last_api_call = False  # Track if last request was an API call
         
         for _, card in cards_to_scrape.iterrows():
             card_id = str(card['card_id'])
@@ -214,13 +267,23 @@ class PSAScraper:
                 current += 1
                 logger.info(f"📊 [{current}/{total_combinations}] {card_name} - {grade['label']}")
                 
-                # Rate limiting - 30 seconds between every request
-                if current > 1:
+                # Fetch and process
+                raw_data, from_cache = self.fetch_data(card_id, grade['value'])
+                
+                # Track cache vs API statistics
+                if from_cache:
+                    cache_hits += 1
+                else:
+                    api_calls += 1
+                
+                # Rate limiting - only wait if last request was an API call (not from cache)
+                if not from_cache and last_api_call:
                     logger.info("⏱️ Waiting 30 seconds to avoid rate limiting...")
                     time.sleep(30)
                 
-                # Fetch and process
-                raw_data = self.fetch_data(card_id, grade['value'])
+                # Update API call tracker
+                last_api_call = not from_cache
+                
                 if raw_data:
                     records = self.process_data(raw_data, card_id, grade['value'], card_name)
                     all_data.extend(records)
@@ -233,6 +296,14 @@ class PSAScraper:
         # Upload remaining data
         if all_data:
             self.load_to_bigquery(all_data)
+        
+        # Display cache statistics
+        logger.info(f"📊 Cache Statistics:")
+        logger.info(f"  - Cache hits: {cache_hits}")
+        logger.info(f"  - API calls: {api_calls}")
+        logger.info(f"  - Cache hit rate: {cache_hits/total_combinations*100:.1f}%")
+        if api_calls > 0:
+            logger.info(f"  - Estimated time saved: {cache_hits * 30} seconds")
         
         logger.info("🎯 Scraping complete!")
 
