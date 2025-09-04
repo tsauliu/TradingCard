@@ -177,27 +177,50 @@ class PSAScraper:
         cards = self.cards.head(1) if test else self.cards
         grades = self.grades[:3] if test else self.grades
         
-        all_records = []
+        total_cards = len(cards)
+        total_grades = len(grades)
+        total_combinations = total_cards * total_grades
         
-        for _, card in cards.iterrows():
+        print(f"Starting scraper: {total_cards} cards × {total_grades} grades = {total_combinations} API calls")
+        print(f"Estimated runtime: ~{total_combinations * 30 / 60:.1f} minutes")
+        
+        all_records = []
+        completed = 0
+        
+        for card_idx, (_, card) in enumerate(cards.iterrows(), 1):
             card_id = str(card['card_id'])
             card_name = card['card_name']
+            print(f"\n[Card {card_idx}/{total_cards}] {card_name} (ID: {card_id})")
             
-            for grade in grades:
+            for grade_idx, grade in enumerate(grades, 1):
+                completed += 1
+                progress = (completed / total_combinations) * 100
+                print(f"  [{completed}/{total_combinations}] Grade {grade} - {progress:.1f}% complete", end="")
+                
                 # Fetch and process
                 data = self.fetch(card_id, grade)
                 
                 if data:
-                    all_records.extend(self.process(data, card_id, grade, card_name))
+                    records = self.process(data, card_id, grade, card_name)
+                    all_records.extend(records)
+                    print(f" - {len(records)} records extracted")
                     
                     # Batch upload
                     if len(all_records) >= 100:
+                        print(f"  Uploading batch of {len(all_records)} records to BigQuery...")
                         self.upload(all_records)
                         all_records = []
+                else:
+                    print(" - No data")
         
         # Upload remaining
-        self.upload(all_records)
-        print("Done!")
+        if all_records:
+            print(f"\nUploading final batch of {len(all_records)} records to BigQuery...")
+            self.upload(all_records)
+        
+        print(f"\n{'='*50}")
+        print(f"Scraping complete! Processed {total_combinations} combinations")
+        print(f"{'='*50}")
 
 if __name__ == "__main__":
     PSAScraper().run(test='test' in sys.argv)
