@@ -10,8 +10,10 @@ import logging
 import sys
 import zipfile
 import shutil
+import psutil
+import gc
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Generator
 from datetime import datetime, timezone
 import time
 
@@ -40,7 +42,8 @@ class TCGDataProcessor:
     
     def __init__(self, project_id: str = None, dataset_id: str = "tcg_data", 
                  table_id: str = "tcg_prices_bda", json_directory: str = "./product_details",
-                 upload_directory: str = None):
+                 upload_directory: str = None, batch_size: int = 1000, 
+                 max_memory_mb: int = 1024):
         """Initialize the processor with BigQuery configuration
         
         Args:
@@ -55,6 +58,8 @@ class TCGDataProcessor:
         self.table_id = table_id
         self.json_directory = json_directory
         self.upload_directory = Path(upload_directory or "~/fileuploader/uploads").expanduser()
+        self.batch_size = batch_size  # Number of files to process per batch
+        self.max_memory_mb = max_memory_mb  # Maximum memory threshold in MB
         
         # Validate configuration
         if not self.project_id:
@@ -65,6 +70,7 @@ class TCGDataProcessor:
         logger.info(f"Configuration: Project={self.project_id}, Dataset={self.dataset_id}, Table={self.table_id}")
         logger.info(f"JSON Directory: {self.json_directory}")
         logger.info(f"Upload Directory: {self.upload_directory}")
+        logger.info(f"Batch Size: {self.batch_size} files, Max Memory: {self.max_memory_mb} MB")
         
         # Initialize BigQuery client
         self.client = bigquery.Client(project=self.project_id)
@@ -378,13 +384,189 @@ class TCGDataProcessor:
         
         return records
     
+    def _get_memory_usage(self) -> float:
+        """Get current memory usage in MB"""
+        process = psutil.Process(os.getpid())
+        return process.memory_info().rss / 1024 / 1024
+    
+    def _file_batch_generator(self, json_files: List[Path], batch_size: int) -> Generator[List[Path], None, None]:
+        """Generate batches of files for processing
+        
+        Args:
+            json_files: List of JSON file paths
+            batch_size: Number of files per batch
+        
+        Yields:
+            Batches of file paths
+        """
+        for i in range(0, len(json_files), batch_size):
+            yield json_files[i:i + batch_size]
+    
+    def _process_batch(self, file_batch: List[Path], add_metadata: bool = False) -> pd.DataFrame:
+        """Process a batch of JSON files and return a DataFrame
+        
+        Args:
+            file_batch: List of file paths to process
+            add_metadata: Whether to add source file metadata
+        
+        Returns:
+            DataFrame with processed records
+        """
+        batch_records = []
+        
+        for json_file in file_batch:
+            try:
+                records = self._process_json_file(json_file, add_metadata=add_metadata)
+                batch_records.extend(records)
+            except Exception as e:
+                logger.debug(f"Error processing {json_file.name}: {e}")
+                continue
+        
+        if not batch_records:
+            return pd.DataFrame()
+        
+        # Convert to DataFrame and clean data
+        df = pd.DataFrame(batch_records)
+        
+        # Data type conversions
+        numeric_columns = ['market_price', 'low_sale_price', 'low_sale_price_with_shipping',
+                          'high_sale_price', 'high_sale_price_with_shipping']
+        for col in numeric_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        integer_columns = ['quantity_sold', 'transaction_count']
+        for col in integer_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
+        
+        # Convert dates
+        if 'bucket_start_date' in df.columns:
+            df['bucket_start_date'] = pd.to_datetime(df['bucket_start_date'], errors='coerce')
+        
+        if 'file_processed_at' in df.columns:
+            df['file_processed_at'] = pd.to_datetime(df['file_processed_at'], errors='coerce')
+        
+        return df
+    
+    def process_all_files_batched(self, recursive: bool = True, add_metadata: bool = False,
+                                  mode: str = "replace") -> int:
+        """Process JSON files in batches and upload incrementally to BigQuery
+        
+        Args:
+            recursive: Whether to scan subdirectories recursively
+            add_metadata: Whether to add source file metadata
+            mode: Upload mode - 'replace' or 'append'
+        
+        Returns:
+            Total number of records processed
+        """
+        json_path = Path(self.json_directory)
+        
+        # Check if directory exists
+        if not json_path.exists():
+            logger.error(f"JSON directory does not exist: {json_path}")
+            return 0
+        
+        # Get JSON files (recursive or flat)
+        if recursive:
+            json_files = list(json_path.glob("**/*.json"))
+            logger.info(f"Scanning recursively for JSON files in {json_path}")
+        else:
+            json_files = list(json_path.glob("*.json"))
+            logger.info(f"Scanning flat directory for JSON files in {json_path}")
+        
+        # Filter out summary files
+        json_files = [f for f in json_files if not f.name.startswith('_summary')]
+        total_files = len(json_files)
+        
+        logger.info(f"Found {total_files:,} JSON files to process in batches of {self.batch_size}")
+        logger.info(f"Initial memory usage: {self._get_memory_usage():.2f} MB")
+        
+        total_records = 0
+        processed_files = 0
+        error_count = 0
+        batch_num = 0
+        start_time = time.time()
+        
+        # Process first batch with TRUNCATE mode if replacing
+        first_batch = True
+        
+        # Process files in batches
+        for file_batch in self._file_batch_generator(json_files, self.batch_size):
+            batch_num += 1
+            batch_start = time.time()
+            
+            # Check memory usage
+            current_memory = self._get_memory_usage()
+            if current_memory > self.max_memory_mb:
+                logger.warning(f"Memory usage ({current_memory:.2f} MB) exceeds threshold "
+                             f"({self.max_memory_mb} MB), forcing garbage collection")
+                gc.collect()
+                current_memory = self._get_memory_usage()
+                logger.info(f"Memory after GC: {current_memory:.2f} MB")
+            
+            logger.info(f"Processing batch {batch_num} ({len(file_batch)} files) - "
+                       f"Memory: {current_memory:.2f} MB")
+            
+            # Process batch
+            batch_df = self._process_batch(file_batch, add_metadata=add_metadata)
+            
+            if not batch_df.empty:
+                # Upload batch to BigQuery
+                try:
+                    # Use TRUNCATE for first batch if replacing, APPEND for all others
+                    batch_mode = mode if first_batch else "append"
+                    self._upload_batch_to_bigquery(batch_df, mode=batch_mode)
+                    
+                    batch_records = len(batch_df)
+                    total_records += batch_records
+                    first_batch = False
+                    
+                    # Clear DataFrame from memory
+                    del batch_df
+                    gc.collect()
+                    
+                except Exception as e:
+                    logger.error(f"Failed to upload batch {batch_num}: {e}")
+                    error_count += len(file_batch)
+            
+            processed_files += len(file_batch)
+            
+            # Progress update
+            elapsed = time.time() - start_time
+            batch_elapsed = time.time() - batch_start
+            rate = processed_files / elapsed if elapsed > 0 else 0
+            remaining = (total_files - processed_files) / rate if rate > 0 else 0
+            
+            logger.info(f"Batch {batch_num} completed in {batch_elapsed:.1f}s | "
+                       f"Progress: {processed_files:,}/{total_files:,} files "
+                       f"({processed_files/total_files*100:.1f}%) | "
+                       f"Rate: {rate:.1f} files/sec | "
+                       f"ETA: {remaining/60:.1f} min | "
+                       f"Total records: {total_records:,}")
+        
+        elapsed = time.time() - start_time
+        logger.info(f"Batch processing completed: {processed_files:,} files, "
+                   f"{total_records:,} records, {error_count:,} errors, "
+                   f"Time: {elapsed/60:.1f} minutes")
+        logger.info(f"Final memory usage: {self._get_memory_usage():.2f} MB")
+        
+        return total_records
+    
     def process_all_files(self, recursive: bool = True, add_metadata: bool = False) -> pd.DataFrame:
-        """Process all JSON files and return a DataFrame
+        """Legacy method - process all JSON files and return a DataFrame (memory intensive)
+        
+        WARNING: This method loads all data into memory at once. Use process_all_files_batched
+        for large datasets.
         
         Args:
             recursive: Whether to scan subdirectories recursively
             add_metadata: Whether to add source file metadata
         """
+        logger.warning("Using legacy process_all_files method - this loads all data into memory!")
+        logger.warning("Consider using process_all_files_batched for large datasets")
+        
         json_path = Path(self.json_directory)
         
         # Check if directory exists
@@ -470,8 +652,33 @@ class TCGDataProcessor:
         logger.info(f"DataFrame ready: {len(df):,} rows × {len(df.columns)} columns")
         return df
     
+    def _upload_batch_to_bigquery(self, df: pd.DataFrame, mode: str = "append"):
+        """Upload a batch DataFrame to BigQuery
+        
+        Args:
+            df: DataFrame to upload
+            mode: Upload mode - 'replace' or 'append'
+        """
+        if df.empty:
+            return
+        
+        # Configure load job
+        write_disposition = WriteDisposition.WRITE_TRUNCATE if mode == "replace" else WriteDisposition.WRITE_APPEND
+        
+        job_config = LoadJobConfig(
+            write_disposition=write_disposition,
+            autodetect=False,
+            schema=self._get_table_schema(),
+            max_bad_records=1000,
+            ignore_unknown_values=True
+        )
+        
+        # Load data
+        job = self.client.load_table_from_dataframe(df, self.table_ref, job_config=job_config)
+        job.result()  # Wait for completion
+    
     def upload_to_bigquery(self, df: pd.DataFrame, mode: str = "replace"):
-        """Upload DataFrame to BigQuery"""
+        """Upload DataFrame to BigQuery (legacy method)"""
         if df.empty:
             logger.warning("No data to upload")
             return
@@ -507,7 +714,8 @@ class TCGDataProcessor:
                    f"Rate: {len(df)/elapsed:.0f} records/sec")
     
     def run(self, mode: str = "replace", process_zip: bool = False,
-            preserve_structure: bool = False, handle_duplicates: str = "rename"):
+            preserve_structure: bool = False, handle_duplicates: str = "rename",
+            use_batching: bool = True):
         """Main execution method
         
         Args:
@@ -515,9 +723,11 @@ class TCGDataProcessor:
             process_zip: Whether to process the latest ZIP file first
             preserve_structure: Whether to preserve ZIP directory structure
             handle_duplicates: How to handle duplicate files ('rename', 'skip', 'overwrite')
+            use_batching: Whether to use batch processing (recommended for large datasets)
         """
         logger.info("="*60)
         logger.info("Starting TCG data processing pipeline")
+        logger.info(f"Mode: {mode}, Batching: {use_batching}")
         logger.info("="*60)
         
         try:
@@ -536,23 +746,39 @@ class TCGDataProcessor:
                 else:
                     logger.info(f"ZIP processing completed: {message}")
             
-            # Process all files (use recursive scanning if structure was preserved)
-            df = self.process_all_files(
-                recursive=preserve_structure or process_zip,
-                add_metadata=preserve_structure
-            )
-            
-            if not df.empty:
-                # Upload to BigQuery
-                self.upload_to_bigquery(df, mode=mode)
-                logger.info("Pipeline completed successfully")
+            # Process files using batch method or legacy method
+            if use_batching:
+                logger.info("Using batch processing method to reduce memory usage")
+                total_records = self.process_all_files_batched(
+                    recursive=preserve_structure or process_zip,
+                    add_metadata=preserve_structure,
+                    mode=mode
+                )
+                if total_records > 0:
+                    logger.info(f"Pipeline completed successfully - processed {total_records:,} records")
+                else:
+                    logger.warning("No data processed")
             else:
-                logger.warning("No data processed")
+                # Legacy method - loads all data into memory
+                df = self.process_all_files(
+                    recursive=preserve_structure or process_zip,
+                    add_metadata=preserve_structure
+                )
+                
+                if not df.empty:
+                    # Upload to BigQuery
+                    self.upload_to_bigquery(df, mode=mode)
+                    logger.info("Pipeline completed successfully")
+                else:
+                    logger.warning("No data processed")
                 
         except Exception as e:
             logger.error(f"Pipeline failed: {e}")
             raise
         finally:
+            # Final garbage collection
+            gc.collect()
+            logger.info(f"Final memory usage: {self._get_memory_usage():.2f} MB")
             logger.info("="*60)
 
 
@@ -577,6 +803,12 @@ def main():
                        help='Preserve directory structure when extracting ZIP files')
     parser.add_argument('--handle-duplicates', choices=['rename', 'skip', 'overwrite'], 
                        default='rename', help='How to handle duplicate filenames when flattening')
+    parser.add_argument('--batch-size', type=int, default=1000,
+                       help='Number of files to process per batch (default: 1000)')
+    parser.add_argument('--max-memory', type=int, default=1024,
+                       help='Maximum memory usage in MB before forcing garbage collection (default: 1024)')
+    parser.add_argument('--no-batching', action='store_true',
+                       help='Disable batch processing (use legacy method - not recommended for large datasets)')
     
     args = parser.parse_args()
     
@@ -586,7 +818,9 @@ def main():
             dataset_id=args.dataset,
             table_id=args.table,
             json_directory=args.directory,
-            upload_directory=args.upload_dir
+            upload_directory=args.upload_dir,
+            batch_size=args.batch_size,
+            max_memory_mb=args.max_memory
         )
         
         # If only extracting ZIP
@@ -606,7 +840,8 @@ def main():
                 mode=args.mode, 
                 process_zip=args.process_zip,
                 preserve_structure=args.preserve_structure,
-                handle_duplicates=args.handle_duplicates
+                handle_duplicates=args.handle_duplicates,
+                use_batching=not args.no_batching
             )
         
     except Exception as e:
