@@ -51,7 +51,7 @@ class PSAScraper:
         if cache_file.exists():
             with open(cache_file) as f:
                 data = json.load(f)
-                return data if data else None, True  # True = from cache
+                return data if data else None
         
         # Fetch from API
         try:
@@ -60,9 +60,10 @@ class PSAScraper:
             data = resp.json() if resp.status_code == 200 else {}
             with open(cache_file, 'w') as f:
                 json.dump(data, f, indent=2)
-            return data if data else None, False  # False = from API
+            time.sleep(30)  # Rate limit after API call
+            return data if data else None
         except:
-            return None, False
+            return None
     
     def process(self, data, item_id, grade, card_name):
         """Convert API data to records"""
@@ -142,20 +143,14 @@ class PSAScraper:
         grades = self.grades[:3] if test else self.grades
         
         all_records = []
-        need_wait = False
         
         for _, card in cards.iterrows():
             card_id = str(card['card_id'])
             card_name = card['card_name']
             
             for grade in grades:
-                # Wait between API calls
-                if need_wait:
-                    time.sleep(30)
-                
                 # Fetch and process
-                data, from_cache = self.fetch(card_id, grade)
-                need_wait = not from_cache  # Only wait after API calls
+                data = self.fetch(card_id, grade)
                 
                 if data:
                     all_records.extend(self.process(data, card_id, grade, card_name))
