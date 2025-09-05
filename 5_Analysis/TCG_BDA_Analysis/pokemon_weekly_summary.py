@@ -90,7 +90,7 @@ def main():
     client = bigquery.Client()
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     
-    print("Fetching Pokemon weekly data...")
+    print("Fetching Pokemon weekly data (scrape_date=2025-08-20)...")
     
     # 1. Weighted ASP by Condition and Volume
     asp_query = """
@@ -109,6 +109,7 @@ def main():
             AND bda.condition IS NOT NULL 
             AND bda.condition != ''
             AND bda.bucket_start_date >= '2024-01-01'
+            AND bda.scrape_date = '2025-08-20'  -- Specific scrape_date filter
         GROUP BY condition, DATE_TRUNC(bucket_start_date, WEEK(MONDAY))
     )
     SELECT 
@@ -136,6 +137,7 @@ def main():
         AND bda.condition IS NOT NULL 
         AND bda.condition != ''
         AND bda.bucket_start_date >= '2024-01-01'
+        AND bda.scrape_date = '2025-08-20'  -- Specific scrape_date filter
     GROUP BY condition, DATE_TRUNC(bucket_start_date, WEEK(MONDAY))
     ORDER BY condition, week_start
     """
@@ -152,6 +154,7 @@ def main():
         WHERE meta.category_categoryId IN (3, 85)  -- Pokemon and Pokemon Japan categories
             AND bda.quantity_sold > 0
             AND bda.bucket_start_date >= '2024-01-01'
+            AND bda.scrape_date = '2025-08-20'  -- Specific scrape_date filter
         GROUP BY DATE_TRUNC(bucket_start_date, WEEK(MONDAY))
     )
     SELECT 

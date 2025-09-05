@@ -212,6 +212,7 @@ def main():
         AND bda.bucket_start_date >= '2024-01-01'
         AND bda.market_price > 0
         AND bda.quantity_sold IS NOT NULL
+        AND bda.scrape_date = '2025-08-20'  -- Specific scrape_date filter
     GROUP BY bda.product_id, DATE_TRUNC(bda.bucket_start_date, WEEK(MONDAY))
     ORDER BY bda.product_id, week_start
     """
