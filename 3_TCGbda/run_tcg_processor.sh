@@ -109,20 +109,31 @@ start_processor() {
     print_info "Log file: $LOG_FILE"
     
     # Parse command line arguments
-    MODE="${1:-replace}"
+    MODE="${1:-append}"
     DIRECTORY="${2:-./product_details}"
     PROCESS_ZIP="${3:-no}"
     PRESERVE_STRUCTURE="${4:-no}"
     HANDLE_DUPLICATES="${5:-rename}"
+    BATCH_SIZE="${6:-500}"
+    MAX_MEMORY="${7:-512}"
     
-    print_info "Mode: $MODE"
+    if [ "$MODE" = "replace" ]; then
+        print_warning "MODE: REPLACE - This will DELETE ALL existing data in BigQuery!"
+        print_warning "Consider using 'append' mode to preserve existing data"
+        echo "Press Ctrl+C within 5 seconds to cancel..."
+        sleep 5
+    else
+        print_info "Mode: $MODE (safe - preserves existing data)"
+    fi
     print_info "Data directory: $DIRECTORY"
     print_info "Process ZIP: $PROCESS_ZIP"
     print_info "Preserve structure: $PRESERVE_STRUCTURE"
     print_info "Handle duplicates: $HANDLE_DUPLICATES"
+    print_info "Batch size: $BATCH_SIZE files"
+    print_info "Max memory: $MAX_MEMORY MB"
     
     # Build command based on options
-    CMD="python3 $PYTHON_SCRIPT --mode $MODE --directory $DIRECTORY"
+    CMD="python3 $PYTHON_SCRIPT --mode $MODE --directory $DIRECTORY --batch-size $BATCH_SIZE --max-memory $MAX_MEMORY"
     
     if [ "$PROCESS_ZIP" = "yes" ] || [ "$PROCESS_ZIP" = "true" ]; then
         CMD="$CMD --process-zip"
@@ -171,12 +182,15 @@ show_usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  start [mode] [dir] [zip] [preserve] [dup]  Start the processor"
-    echo "                                   mode: replace/append (default: replace)"
+    echo "  start [mode] [dir] [zip] [preserve] [dup] [batch] [mem]  Start the processor"
+    echo "                                   mode: append/replace (default: append - SAFE)"
+    echo "                                   WARNING: 'replace' will DELETE ALL existing data!"
     echo "                                   dir: JSON directory (default: ./product_details)"
     echo "                                   zip: yes/no/zip-only (default: no)"
     echo "                                   preserve: yes/no - preserve dir structure (default: no)"
     echo "                                   dup: rename/skip/overwrite - handle duplicates (default: rename)"
+    echo "                                   batch: batch size (default: 500)"
+    echo "                                   mem: max memory in MB (default: 512)"
     echo "  extract [preserve] [dup]         Extract latest ZIP file only"
     echo "                                   preserve: yes/no (default: no)"
     echo "                                   dup: rename/skip/overwrite (default: rename)"
@@ -187,11 +201,12 @@ show_usage() {
     echo "  help                             Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0 start                         # Start with default settings (replace mode)"
+    echo "  $0 start                         # Start with default settings (append mode - safe)"
     echo "  $0 start append                  # Start in append mode"
     echo "  $0 start replace /data           # Start with custom data directory"
     echo "  $0 start replace ./product_details yes  # Process ZIP then upload"
     echo "  $0 start replace ./product_details yes yes  # Process ZIP with preserved structure"
+    echo "  $0 start replace ./product_details no no rename 1000 1024  # Custom batch/memory settings"
     echo "  $0 extract                       # Extract latest ZIP only"
     echo "  $0 extract yes                   # Extract with preserved structure"
     echo "  $0 stop                          # Stop the processor"
@@ -204,7 +219,7 @@ case "${1:-start}" in
     start)
         check_requirements
         check_existing_session
-        start_processor "${2:-replace}" "${3:-./product_details}" "${4:-no}" "${5:-no}" "${6:-rename}"
+        start_processor "${2:-append}" "${3:-./product_details}" "${4:-no}" "${5:-no}" "${6:-rename}" "${7:-500}" "${8:-512}"
         ;;
     extract)
         check_requirements

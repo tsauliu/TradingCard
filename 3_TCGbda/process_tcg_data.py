@@ -112,8 +112,8 @@ class TCGDataProcessor:
             bigquery.SchemaField("high_sale_price_with_shipping", "FLOAT"),
             bigquery.SchemaField("transaction_count", "INTEGER"),
             bigquery.SchemaField("file_processed_at", "TIMESTAMP"),
-            bigquery.SchemaField("source_file", "STRING"),
-            bigquery.SchemaField("source_directory", "STRING")
+            bigquery.SchemaField("source_file", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("source_directory", "STRING", mode="NULLABLE")
         ]
     
     @staticmethod
@@ -358,10 +358,13 @@ class TCGDataProcessor:
                 'file_processed_at': datetime.now(timezone.utc)
             }
             
-            # Add source metadata if requested
+            # Add source metadata (required for schema, but can be None)
             if add_metadata:
                 base_info['source_file'] = str(file_path.relative_to(Path(self.json_directory)))
                 base_info['source_directory'] = file_path.parent.name
+            else:
+                base_info['source_file'] = None
+                base_info['source_directory'] = None
             
             # Process price history buckets
             buckets = result.get('buckets', [])
@@ -517,6 +520,8 @@ class TCGDataProcessor:
                 try:
                     # Use TRUNCATE for first batch if replacing, APPEND for all others
                     batch_mode = mode if first_batch else "append"
+                    if batch_mode == "replace" and first_batch:
+                        logger.warning("⚠️  TRUNCATING TABLE - All existing data will be deleted!")
                     self._upload_batch_to_bigquery(batch_df, mode=batch_mode)
                     
                     batch_records = len(batch_df)
@@ -677,13 +682,15 @@ class TCGDataProcessor:
         job = self.client.load_table_from_dataframe(df, self.table_ref, job_config=job_config)
         job.result()  # Wait for completion
     
-    def upload_to_bigquery(self, df: pd.DataFrame, mode: str = "replace"):
+    def upload_to_bigquery(self, df: pd.DataFrame, mode: str = "append"):
         """Upload DataFrame to BigQuery (legacy method)"""
         if df.empty:
             logger.warning("No data to upload")
             return
         
         logger.info(f"Uploading {len(df):,} records to BigQuery (mode={mode})")
+        if mode == "replace":
+            logger.warning("⚠️  REPLACE mode: This will DELETE all existing data in the table!")
         
         # Configure load job
         write_disposition = WriteDisposition.WRITE_TRUNCATE if mode == "replace" else WriteDisposition.WRITE_APPEND
@@ -713,7 +720,7 @@ class TCGDataProcessor:
                    f"Time: {elapsed/60:.1f} minutes, "
                    f"Rate: {len(df)/elapsed:.0f} records/sec")
     
-    def run(self, mode: str = "replace", process_zip: bool = False,
+    def run(self, mode: str = "append", process_zip: bool = False,
             preserve_structure: bool = False, handle_duplicates: str = "rename",
             use_batching: bool = True):
         """Main execution method
@@ -728,6 +735,10 @@ class TCGDataProcessor:
         logger.info("="*60)
         logger.info("Starting TCG data processing pipeline")
         logger.info(f"Mode: {mode}, Batching: {use_batching}")
+        if mode == "replace":
+            logger.warning("⚠️  WARNING: REPLACE MODE WILL DELETE ALL EXISTING DATA IN THE TABLE!")
+            logger.warning("⚠️  Your existing historical data will be permanently lost!")
+            logger.warning("⚠️  Consider using 'append' mode instead to preserve existing data.")
         logger.info("="*60)
         
         try:
@@ -791,8 +802,8 @@ def main():
     parser.add_argument('--dataset', help='BigQuery dataset ID', default='tcg_data')
     parser.add_argument('--table', help='BigQuery table ID', default='tcg_prices_bda')
     parser.add_argument('--directory', help='JSON files directory', default='./product_details')
-    parser.add_argument('--mode', choices=['replace', 'append'], default='replace',
-                       help='Upload mode: replace all data or append')
+    parser.add_argument('--mode', choices=['replace', 'append'], default='append',
+                       help='Upload mode: append (default, safe) or replace (DANGER: deletes all existing data!)')
     parser.add_argument('--upload-dir', help='Directory containing ZIP files to process',
                        default='~/fileuploader/uploads')
     parser.add_argument('--process-zip', action='store_true',
