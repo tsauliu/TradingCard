@@ -6,6 +6,7 @@ The `create_psa_weekly_analysis.py` script has been updated to filter data by th
 - Process only data from specific scraping sessions
 - Avoid reprocessing all historical data
 - Create targeted analyses for specific data collection runs
+- Automatically remove duplicate sales within scraping sessions
 
 ## Key Changes
 
@@ -13,6 +14,25 @@ The `create_psa_weekly_analysis.py` script has been updated to filter data by th
 2. **Efficient partition filtering**: Uses BigQuery table partitioning for optimal query performance
 3. **Parameterized queries**: Safer and more efficient query execution
 4. **Enhanced output naming**: Includes scrape date in the output filename
+5. **Automatic deduplication**: Removes duplicate sales within the same scraping session
+
+## Deduplication Logic
+
+The script automatically removes duplicate sales using these criteria:
+- **Deduplication Key**: `card_name + psa_level + auction_date + auction_price`
+- **Strategy**: Keeps the first occurrence (earliest `scraped_at` time) of each duplicate group
+- **Reporting**: Provides detailed analysis of duplicates found and removed
+
+### What Gets Deduplicated
+- Same card, same grade, same sale date, same price = **Duplicate** (removed)
+- Same card, same grade, same date, different prices = **Different sales** (kept)
+
+### Duplicate Analysis Output
+The script shows:
+- Number of duplicate groups found
+- Total duplicate rows removed
+- Time span over which duplicates were scraped
+- Impact on key metrics (cards, price ranges, etc.)
 
 ## Usage
 

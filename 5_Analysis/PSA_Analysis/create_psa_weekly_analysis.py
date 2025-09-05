@@ -291,7 +291,70 @@ def main():
     
     try:
         df = client.query(query, job_config=job_config).to_dataframe()
-        print(f"Query completed. Retrieved {len(df):,} rows.")
+        original_row_count = len(df)
+        print(f"Query completed. Retrieved {original_row_count:,} rows.")
+        
+        # Deduplication logic - remove duplicate sales within the same scraping session
+        if original_row_count > 0:
+            print(f"\nPerforming deduplication analysis...")
+            
+            # Define deduplication columns
+            # Same card/grade/date/price are considered duplicates from scraping
+            dedup_columns = ['card_name', 'psa_level', 'auction_date', 'auction_price']
+            
+            # Analyze duplicates before removing them
+            duplicates_mask = df.duplicated(subset=dedup_columns, keep=False)
+            duplicates_df = df[duplicates_mask]
+            
+            if len(duplicates_df) > 0:
+                # Get duplicate groups
+                dup_groups = duplicates_df.groupby(dedup_columns).agg({
+                    'scraped_at': ['count', 'min', 'max'],
+                    'psa_url': 'nunique'
+                }).reset_index()
+                
+                # Flatten column names
+                dup_groups.columns = ['card_name', 'psa_level', 'auction_date', 'auction_price', 
+                                    'duplicate_count', 'earliest_scrape', 'latest_scrape', 'unique_urls']
+                
+                # Sort by duplicate count descending
+                dup_groups = dup_groups.sort_values('duplicate_count', ascending=False)
+                
+                # Show duplicate analysis
+                total_duplicates = duplicates_df.shape[0] - dup_groups.shape[0]  # Total extra rows
+                print(f"  Found {len(dup_groups):,} duplicate sale groups containing {len(duplicates_df):,} total rows")
+                print(f"  Will remove {total_duplicates:,} duplicate rows ({(total_duplicates/original_row_count)*100:.1f}% of data)")
+                
+                # Show top duplicate examples
+                if len(dup_groups) > 0:
+                    print(f"\n  Top duplicate sales (same card/grade/date/price):")
+                    for _, row in dup_groups.head(5).iterrows():
+                        time_diff = (row['latest_scrape'] - row['earliest_scrape']).total_seconds() / 60
+                        print(f"    - {row['card_name']} PSA {row['psa_level']} on {row['auction_date']}: ")
+                        print(f"      ${row['auction_price']:,.2f} → {row['duplicate_count']} occurrences, ")
+                        print(f"      scraped over {time_diff:.1f} min, {row['unique_urls']} unique URLs")
+            
+            # Remove duplicates, keeping the first occurrence (earliest scraped_at)
+            df_before_dedup = df.copy()  # Keep original for debugging if needed
+            df = df.sort_values(['card_name', 'psa_level', 'auction_date', 'auction_price', 'scraped_at'])
+            df = df.drop_duplicates(subset=dedup_columns, keep='first')
+            
+            # Report deduplication results
+            deduplicated_row_count = len(df)
+            duplicates_removed = original_row_count - deduplicated_row_count
+            
+            if duplicates_removed > 0:
+                print(f"\n  ✓ Removed {duplicates_removed:,} duplicate rows")
+                print(f"  ✓ Unique sales after deduplication: {deduplicated_row_count:,} rows")
+                print(f"  ✓ Data reduction: {(duplicates_removed/original_row_count)*100:.1f}%")
+                
+                # Show impact on key metrics
+                print(f"\n  Deduplication impact:")
+                print(f"    Cards before/after: {df_before_dedup['card_name'].nunique():,} → {df['card_name'].nunique():,}")
+                print(f"    Card/grade combos before/after: {df_before_dedup.groupby(['card_name', 'psa_level']).ngroups:,} → {df.groupby(['card_name', 'psa_level']).ngroups:,}")
+                print(f"    Price range before/after: ${df_before_dedup['auction_price'].min():.2f}-${df_before_dedup['auction_price'].max():,.2f} → ${df['auction_price'].min():.2f}-${df['auction_price'].max():,.2f}")
+            else:
+                print(f"  ✓ No duplicates found - data is already clean")
     except Exception as e:
         print(f"Error executing query: {e}")
         return
@@ -462,15 +525,15 @@ def main():
     wb.save(excel_file)
     
     print(f"\nExcel file saved: {excel_file}")
-    print(f"  Data from scrape date: {scrape_date_str}")
+    print(f"  Data from scrape date: {scrape_date_str} (deduplicated)")
     print(f"  Sheet 1 'Top 10 Cards - All PSA Levels': {pivot_df.shape}")
     if not psa9_pivot.empty:
         print(f"  Sheet 2 'PSA 9 Only (Top 10)': {psa9_pivot.shape[0]} cards x {psa9_simple.shape[1]} columns")
     else:
         print(f"  Sheet 2 'PSA 9 Only (Top 10)': No PSA 9 data available")
     
-    # Summary statistics
-    print(f"\nSummary statistics:")
+    # Summary statistics - now using deduplicated data
+    print(f"\nSummary statistics (after deduplication):")
     print(f"  Total card/PSA combinations: {len(pivot_df)}")
     print(f"  Weeks of data: {len([col for col in pivot_df.columns if col not in ['psa_level', 'card_name']])}")
     print(f"  Average transactions per week: {weekly_data['transaction_count'].mean():.1f}")
@@ -483,6 +546,7 @@ def main():
         print(f"  {row['card_name']}: {row['total_sales_count']:,} lifecycle sales, {card_price_point_total:,} price points")
     
     print(f"\nNote: Output filtered to top 10 cards by lifecycle sales from scrape date {scrape_date_str}")
+    print(f"Data has been automatically deduplicated to remove duplicate sales within the scraping session")
     print(f"Within each card, PSA levels are ordered by grade (10, 9, 8, 7... 0)")
     print(f"'Price Points' column shows number of weeks with actual price data for each PSA level")
     
