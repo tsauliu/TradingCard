@@ -155,34 +155,22 @@ def main():
     
     print(f"Fetching Pokemon weekly data (scrape_date={scrape_date})...")
     
-    # 1. Weighted ASP by Condition and Volume
+    # 1. Simple ASP by Condition
     asp_query = f"""
-    WITH pokemon_weekly AS (
-        SELECT 
-            condition,
-            DATE_TRUNC(bucket_start_date, WEEK(MONDAY)) as week_start,
-            SUM(quantity_sold * market_price) as total_value,
-            SUM(quantity_sold) as total_quantity
-        FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda` bda
-        INNER JOIN `rising-environs-456314-a3.tcg_data.tcg_metadata` meta
-            ON CAST(bda.product_id AS STRING) = CAST(meta.product_productId AS STRING)
-        WHERE meta.category_categoryId IN (3, 85)  -- Pokemon and Pokemon Japan categories
-            AND bda.market_price > 0 
-            AND bda.quantity_sold > 0
-            AND bda.condition IS NOT NULL 
-            AND bda.condition != ''
-            AND bda.bucket_start_date >= '2024-01-01'
-            AND bda.scrape_date = '{scrape_date}'
-        GROUP BY condition, DATE_TRUNC(bucket_start_date, WEEK(MONDAY))
-    )
     SELECT 
         condition,
-        week_start,
-        CASE 
-            WHEN total_quantity > 0 THEN total_value / total_quantity 
-            ELSE 0 
-        END as weighted_asp
-    FROM pokemon_weekly
+        DATE_TRUNC(bucket_start_date, WEEK(MONDAY)) as week_start,
+        AVG(market_price) as simple_asp
+    FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda` bda
+    INNER JOIN `rising-environs-456314-a3.tcg_data.tcg_metadata` meta
+        ON CAST(bda.product_id AS STRING) = CAST(meta.product_productId AS STRING)
+    WHERE meta.category_categoryId IN (3, 85)  -- Pokemon and Pokemon Japan categories
+        AND bda.market_price > 0 
+        AND bda.condition IS NOT NULL 
+        AND bda.condition != ''
+        AND bda.bucket_start_date >= '2024-01-01'
+        AND bda.scrape_date = '{scrape_date}'
+    GROUP BY condition, DATE_TRUNC(bucket_start_date, WEEK(MONDAY))
     ORDER BY condition, week_start
     """
     
@@ -250,7 +238,7 @@ def main():
     asp_pivot = asp_df.pivot(
         index='condition', 
         columns='week_start', 
-        values='weighted_asp'
+        values='simple_asp'
     ).round(2)
     asp_pivot.columns = [col.strftime('%Y-%m-%d') for col in asp_pivot.columns]
     asp_pivot = asp_pivot.reset_index()
@@ -297,7 +285,7 @@ def main():
     # Section 1: Weighted ASP
     current_row = add_formatted_section(
         ws, asp_pivot, current_row, 
-        "1. Average Selling Price (ASP) - Weighted by Condition and Volume", 
+        "1. Average Selling Price (ASP) - Simple Average by Condition", 
         is_price=True
     )
     
@@ -327,7 +315,7 @@ def main():
     # Summary statistics
     print("\nSummary Statistics:")
     if not asp_df.empty:
-        overall_asp = asp_df.groupby('week_start')['weighted_asp'].mean().mean()
+        overall_asp = asp_df.groupby('week_start')['simple_asp'].mean().mean()
         print(f"Overall average ASP: ${overall_asp:.2f}")
     
     if not volume_df.empty:
