@@ -312,6 +312,20 @@ class TCGDataProcessor:
                 # Extract all files preserving structure
                 zip_ref.extractall(extract_dir)
             
+            # Check for nested ZIP files and extract them
+            nested_zips = list(extract_dir.glob("**/*.zip"))
+            if nested_zips:
+                logger.info(f"Found {len(nested_zips)} nested ZIP files, extracting them...")
+                for nested_zip in nested_zips:
+                    logger.info(f"Extracting nested ZIP: {nested_zip.name}")
+                    try:
+                        with zipfile.ZipFile(nested_zip, 'r') as nested_ref:
+                            # Extract to the same directory as the nested ZIP
+                            nested_ref.extractall(nested_zip.parent)
+                        logger.info(f"Successfully extracted {nested_zip.name}")
+                    except Exception as e:
+                        logger.error(f"Failed to extract nested ZIP {nested_zip.name}: {e}")
+            
             # Count extracted files
             extracted_json_files = list(extract_dir.glob("**/*.json"))
             logger.info(f"Successfully extracted {len(extracted_json_files)} JSON files with preserved structure")
