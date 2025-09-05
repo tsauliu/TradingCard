@@ -123,19 +123,26 @@ def main():
     
     # Get top 15 Pokemon products by lifecycle quantity
     top_products_query = """
-    WITH first_week_check AS (
+    WITH first_week_per_product AS (
         SELECT 
             product_id,
-            MIN(DATE_TRUNC(bucket_start_date, WEEK(MONDAY))) as first_week,
-            SUM(CASE 
-                WHEN DATE_TRUNC(bucket_start_date, WEEK(MONDAY)) = MIN(DATE_TRUNC(bucket_start_date, WEEK(MONDAY))) OVER (PARTITION BY product_id)
-                THEN quantity_sold 
-                ELSE 0 
-            END) as first_week_qty
+            MIN(DATE_TRUNC(bucket_start_date, WEEK(MONDAY))) as first_week
         FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda`
         WHERE bucket_start_date >= '2024-01-01'
         GROUP BY product_id
-        HAVING first_week_qty > 0
+    ),
+    first_week_check AS (
+        SELECT 
+            p.product_id,
+            fw.first_week,
+            SUM(p.quantity_sold) as first_week_qty
+        FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda` p
+        INNER JOIN first_week_per_product fw 
+            ON p.product_id = fw.product_id 
+            AND DATE_TRUNC(p.bucket_start_date, WEEK(MONDAY)) = fw.first_week
+        WHERE p.bucket_start_date >= '2024-01-01'
+        GROUP BY p.product_id, fw.first_week
+        HAVING SUM(p.quantity_sold) > 0
     ),
     pokemon_products AS (
         SELECT 
