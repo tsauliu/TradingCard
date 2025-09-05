@@ -14,23 +14,33 @@ Generates overall Pokemon (EN + JP) weekly market analysis with:
 **Output:** Excel file with 3 sections showing weekly trends from 2024-present
 
 ### 2. pokemon_top15_products.py  
-Analyzes top 15 Pokemon products (English and Japanese combined) by lifetime sales volume with:
+Analyzes specific Pokemon products defined in `top15products.csv` with:
 - **ASP by Product** - Weekly weighted average prices for each card
 - **Trading Volumes by Product** - Weekly sales volumes for each card
-- **Product Metadata** - Detailed information including TCGPlayer URLs
+- **Product Metadata** - Detailed information from BigQuery
 
-**Outputs:**
+**Required Input File:**
+- `top15products.csv` - Contains TCGPlayer product URLs (one URL per line)
+  - Example: `https://www.tcgplayer.com/product/453466/pokemon-crown-zenith-crown-zenith-booster-pack`
+  - Product IDs are automatically extracted from URLs
+
+**Output:**
 - Excel file with ASP and volume data
-- Text file with product links and metadata for reference
 
 ## Usage
 
 ```bash
-# Run weekly summary analysis
+# Run weekly summary analysis (default scrape_date=2025-09-04)
 python3 pokemon_weekly_summary.py
 
-# Run top 15 products analysis  
+# Run with specific scrape_date
+python3 pokemon_weekly_summary.py --scrape_date 2025-09-04
+
+# Run top 15 products analysis (reads from top15products.csv)
 python3 pokemon_top15_products.py
+
+# Run with specific scrape_date
+python3 pokemon_top15_products.py --scrape_date 2025-09-04
 ```
 
 ## Data Filters
@@ -38,10 +48,7 @@ python3 pokemon_top15_products.py
   - Pokemon (category_categoryId = 3)
   - Pokemon Japan (category_categoryId = 85)
 - **Date Range:** 2024-01-01 to present
-- **Top Products Criteria:**
-  - ASP > $5
-  - First week quantity > 0
-  - Ranked by lifetime quantity sold
+- **scrape_date:** Configurable via command-line parameter (default: 2025-09-04)
 
 ## Output Location
 All files are saved to `../output/` with timestamp prefix (YYYY-MM-DD_HHMMSS)

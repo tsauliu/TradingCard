@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 Top 15 Pokemon Products Analysis
+Reads product IDs from top15products.csv and analyzes them
 Outputs:
 1. ASP weighted by Volume and Condition for each card
 2. Trading Volumes for each card
-Also saves product metadata to text file
 
 Usage:
     python3 pokemon_top15_products.py [--scrape_date YYYY-MM-DD]
@@ -19,6 +19,7 @@ from datetime import datetime
 import os
 import argparse
 import sys
+import re
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
@@ -49,6 +50,27 @@ def get_available_scrape_dates(client):
     
     result = client.query(query).to_dataframe()
     return result['scrape_date'].tolist()
+
+def read_product_ids_from_csv(csv_path='top15products.csv'):
+    """Read product IDs from CSV file containing TCGPlayer URLs, preserving order"""
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+    
+    product_ids = []  # Will maintain CSV order
+    with open(csv_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                # Extract product ID from URL: /product/453466/
+                match = re.search(r'/product/(\d+)/', line)
+                if match:
+                    product_ids.append(int(match.group(1)))
+    
+    if not product_ids:
+        raise ValueError(f"No valid product IDs found in {csv_path}")
+    
+    print(f"Read {len(product_ids)} product IDs from {csv_path} (order preserved)")
+    return product_ids
 
 def add_formatted_section(ws, df, start_row, title, is_price=False):
     """Add formatted data section to worksheet"""
@@ -121,41 +143,13 @@ def add_formatted_section(ws, df, start_row, title, is_price=False):
     
     return row_idx + 3
 
-def save_product_links(products_df, timestamp, scrape_date):
-    """Save product links and metadata to text file"""
-    output_dir = "../output"
-    os.makedirs(output_dir, exist_ok=True)
-    
-    scrape_date_clean = scrape_date.replace('-', '')
-    text_file = f"{output_dir}/{timestamp}_pokemon_product_links_sd{scrape_date_clean}.txt"
-    
-    with open(text_file, 'w', encoding='utf-8') as f:
-        f.write("=" * 80 + "\n")
-        f.write("TOP 15 POKEMON PRODUCTS (EN + JP) - METADATA AND LINKS\n")
-        f.write(f"Generated: {timestamp}\n")
-        f.write(f"Data Source: scrape_date={scrape_date}\n")
-        f.write("=" * 80 + "\n\n")
-        
-        for idx, row in products_df.iterrows():
-            f.write(f"Rank #{idx + 1}\n")
-            f.write("-" * 40 + "\n")
-            f.write(f"Product ID: {row['product_id']}\n")
-            f.write(f"Product Name: {row['product_name']}\n")
-            f.write(f"Group: {row['group_name']}\n")
-            f.write(f"Lifecycle Quantity Sold: {row['lifecycle_quantity_sold']:,}\n")
-            f.write(f"Lifecycle ASP: ${row['lifecycle_asp']:.2f}\n")
-            f.write(f"TCGPlayer URL: {row['product_url']}\n")
-            f.write("\n")
-    
-    print(f"Product links saved to: {text_file}")
-    return text_file
 
 def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Top 15 Pokemon Products Analysis')
     parser.add_argument('--scrape_date', type=str, 
                        help='Scrape date to analyze (YYYY-MM-DD format)',
-                       default='{scrape_date}')
+                       default='2025-09-04')
     
     args = parser.parse_args()
     scrape_date = args.scrape_date
@@ -184,80 +178,60 @@ def main():
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     scrape_date_clean = scrape_date.replace('-', '')  # For filename
     
-    print(f"Fetching top 15 Pokemon products (EN + JP) for scrape_date={scrape_date}...")
+    # Read product IDs from CSV file
+    print(f"Reading product IDs from top15products.csv...")
+    try:
+        product_ids = read_product_ids_from_csv('top15products.csv')
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     
-    # Get top 15 Pokemon products by lifecycle quantity
-    top_products_query = f"""
-    WITH first_week_per_product AS (
-        SELECT 
-            product_id,
-            MIN(DATE_TRUNC(bucket_start_date, WEEK(MONDAY))) as first_week
-        FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda`
-        WHERE bucket_start_date >= '2024-01-01'
-            AND scrape_date = '{scrape_date}'  -- Specific scrape_date filter
-        GROUP BY product_id
-    ),
-    first_week_check AS (
-        SELECT 
-            p.product_id,
-            fw.first_week,
-            SUM(p.quantity_sold) as first_week_qty
-        FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda` p
-        INNER JOIN first_week_per_product fw 
-            ON p.product_id = fw.product_id 
-            AND DATE_TRUNC(p.bucket_start_date, WEEK(MONDAY)) = fw.first_week
-        WHERE p.bucket_start_date >= '2024-01-01'
-            AND p.scrape_date = '{scrape_date}'  -- Specific scrape_date filter
-        GROUP BY p.product_id, fw.first_week
-        HAVING SUM(p.quantity_sold) > 0
-    ),
-    pokemon_products AS (
-        SELECT 
-            bda.product_id,
-            SUM(bda.quantity_sold) as lifecycle_quantity_sold,
-            CASE 
-                WHEN SUM(bda.quantity_sold) > 0 
-                THEN SUM(bda.quantity_sold * bda.market_price) / SUM(bda.quantity_sold)
-                ELSE 0 
-            END as lifecycle_asp,
-            MAX(meta.product_name) as product_name,
-            MAX(meta.product_cleanName) as product_clean_name,
-            MAX(meta.group_name) as group_name,
-            MAX(meta.product_url) as product_url
-        FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda` bda
-        INNER JOIN `rising-environs-456314-a3.tcg_data.tcg_metadata` meta
-            ON CAST(bda.product_id AS STRING) = CAST(meta.product_productId AS STRING)
-        INNER JOIN first_week_check fwc
-            ON bda.product_id = fwc.product_id
-        WHERE meta.category_categoryId IN (3, 85)  -- Pokemon and Pokemon Japan categories
-            AND bda.quantity_sold IS NOT NULL 
-            AND bda.market_price > 0
-            AND bda.bucket_start_date >= '2024-01-01'
-            AND bda.scrape_date = '{scrape_date}'  -- Specific scrape_date filter
-        GROUP BY bda.product_id
-        HAVING lifecycle_asp > 5  -- ASP > $5 filter
-    )
-    SELECT *
-    FROM pokemon_products
-    ORDER BY lifecycle_quantity_sold DESC
-    LIMIT 15
+    product_ids_str = "', '".join([str(pid) for pid in product_ids])
+    print(f"Processing {len(product_ids)} products: {product_ids}")
+    
+    # Get metadata for these specific products
+    metadata_query = f"""
+    SELECT DISTINCT
+        bda.product_id,
+        MAX(meta.product_name) as product_name,
+        MAX(meta.product_cleanName) as product_clean_name,
+        MAX(meta.group_name) as group_name,
+        SUM(bda.quantity_sold) as lifecycle_quantity_sold,
+        CASE 
+            WHEN SUM(bda.quantity_sold) > 0 
+            THEN SUM(bda.quantity_sold * bda.market_price) / SUM(bda.quantity_sold)
+            ELSE 0 
+        END as lifecycle_asp
+    FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda` bda
+    INNER JOIN `rising-environs-456314-a3.tcg_data.tcg_metadata` meta
+        ON CAST(bda.product_id AS STRING) = CAST(meta.product_productId AS STRING)
+    WHERE bda.product_id IN ('{product_ids_str}')
+        AND bda.bucket_start_date >= '2024-01-01'
+        AND bda.scrape_date = '{scrape_date}'
+    GROUP BY bda.product_id
+    ORDER BY bda.product_id
     """
     
-    print("Executing top products query...")
-    top_products_df = client.query(top_products_query).to_dataframe()
+    print("Fetching product metadata...")
+    top_products_df = client.query(metadata_query).to_dataframe()
     
     if top_products_df.empty:
-        print("No products found matching criteria.")
+        print(f"No data found for these products with scrape_date={scrape_date}")
         return
     
-    print(f"Found {len(top_products_df)} top Pokemon products")
+    # Convert product_id to int to match CSV IDs
+    top_products_df['product_id'] = top_products_df['product_id'].astype(int)
     
-    # Save product links to text file
-    save_product_links(top_products_df, timestamp, scrape_date)
+    # Create order mapping from CSV
+    order_mapping = {pid: idx for idx, pid in enumerate(product_ids)}
     
-    # Get product IDs for detailed queries
-    product_ids = top_products_df['product_id'].tolist()
-    product_ids_str = "', '".join([str(pid) for pid in product_ids])
+    # Sort dataframe to match CSV order
+    top_products_df['csv_order'] = top_products_df['product_id'].map(order_mapping)
+    top_products_df = top_products_df.sort_values('csv_order')
+    top_products_df = top_products_df.drop('csv_order', axis=1)
+    top_products_df = top_products_df.reset_index(drop=True)  # Reset index after sorting
+    
+    print(f"Found data for {len(top_products_df)} products (sorted to match CSV order)")
     
     # Get weekly data for these products
     weekly_data_query = f"""
@@ -292,7 +266,13 @@ def main():
         print("No weekly data found.")
         return
     
+    # Convert product_id to int to match CSV IDs
+    weekly_df['product_id'] = weekly_df['product_id'].astype(int)
+    
     print(f"Retrieved {len(weekly_df)} weekly records")
+    
+    # Create order mapping from CSV for sorting
+    order_mapping = {pid: idx for idx, pid in enumerate(product_ids)}
     
     # Create pivot tables
     # 1. ASP pivot - products as rows, weeks as columns
@@ -306,6 +286,10 @@ def main():
     # Format column headers as dates
     asp_pivot.columns = [col.strftime('%Y-%m-%d') for col in asp_pivot.columns]
     asp_pivot = asp_pivot.reset_index()
+    
+    # Sort by CSV order
+    asp_pivot['csv_order'] = asp_pivot['product_id'].map(order_mapping)
+    asp_pivot = asp_pivot.sort_values('csv_order').drop('csv_order', axis=1)
     
     # Create display names for products (truncated for readability)
     asp_pivot['Product'] = asp_pivot.apply(
@@ -331,6 +315,10 @@ def main():
     volume_pivot.columns = [col.strftime('%Y-%m-%d') for col in volume_pivot.columns]
     volume_pivot = volume_pivot.reset_index()
     
+    # Sort by CSV order
+    volume_pivot['csv_order'] = volume_pivot['product_id'].map(order_mapping)
+    volume_pivot = volume_pivot.sort_values('csv_order').drop('csv_order', axis=1)
+    
     # Create display names
     volume_pivot['Product'] = volume_pivot.apply(
         lambda x: f"{x['product_name'][:40]}... ({x['product_id']})" 
@@ -347,8 +335,8 @@ def main():
     output_dir = "../output"
     os.makedirs(output_dir, exist_ok=True)
     
-    # Create Excel file with scrape_date in filename
-    excel_file = f"{output_dir}/{timestamp}_pokemon_top15_products_sd{scrape_date_clean}.xlsx"
+    # Create Excel file with scrape_date at the beginning of filename
+    excel_file = f"{output_dir}/sd{scrape_date_clean}_{timestamp}_pokemon_top15_products.xlsx"
     
     wb = Workbook()
     ws = wb.active
@@ -400,12 +388,13 @@ def main():
     print(f"Number of products: {len(top_products_df)}")
     print(f"Week range: {asp_display.columns[1]} to {asp_display.columns[-1]}")
     
-    # Print top 5 products summary
-    print("\nTop 5 Pokemon Products:")
-    print("-" * 60)
-    for idx, row in top_products_df.head(5).iterrows():
-        print(f"{idx+1}. {row['product_name'][:50]}")
-        print(f"   ID: {row['product_id']} | Sales: {row['lifecycle_quantity_sold']:,} | ASP: ${row['lifecycle_asp']:.2f}")
+    # Print products summary in CSV order
+    print("\nProducts in CSV order:")
+    print("-" * 80)
+    for idx in range(len(top_products_df)):
+        row = top_products_df.iloc[idx]
+        product_name = row['product_clean_name'][:45] if len(row['product_clean_name']) > 45 else row['product_clean_name']
+        print(f"{idx+1:2}. {product_name:45} | ID: {row['product_id']:6} | Sales: {row['lifecycle_quantity_sold']:7,} | ASP: ${row['lifecycle_asp']:6.2f}")
 
 if __name__ == "__main__":
     main()
