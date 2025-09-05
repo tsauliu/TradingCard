@@ -289,9 +289,14 @@ def main():
     card_total_sales = weekly_data.groupby('card_name')['total_sales_count'].first().reset_index()
     card_total_sales = card_total_sales[card_total_sales['total_sales_count'].notnull()]
     
-    # Sort cards by lifecycle sales (as before)
-    card_total_sales = card_total_sales.sort_values('total_sales_count', ascending=False)
+    # Sort cards by lifecycle sales and keep only top 10
+    card_total_sales = card_total_sales.sort_values('total_sales_count', ascending=False).head(10)
+    top_10_cards = set(card_total_sales['card_name'])
     card_order = {card: idx for idx, card in enumerate(card_total_sales['card_name'])}
+    
+    # Filter all data to only include top 10 cards
+    df = df[df['card_name'].isin(top_10_cards)]
+    weekly_data = weekly_data[weekly_data['card_name'].isin(top_10_cards)]
     
     # Create card to total sales mapping for adding to output
     card_sales_map = dict(zip(card_total_sales['card_name'], card_total_sales['total_sales_count']))
@@ -357,14 +362,14 @@ def main():
     # Create workbook with multiple sheets
     wb = Workbook()
     
-    # Main sheet with all PSA levels
+    # Main sheet with all PSA levels (top 10 cards)
     ws1 = wb.active
-    ws1.title = "All PSA Levels"
+    ws1.title = "Top 10 Cards - All PSA Levels"
     current_row = 1
-    current_row = add_nested_formatted_data(ws1, pivot_df, current_row, "Weekly Average PSA Auction Prices by Grade and Card")
+    current_row = add_nested_formatted_data(ws1, pivot_df, current_row, "Weekly Average PSA Auction Prices - Top 10 Cards by Lifecycle Sales")
     
-    # Create PSA 9 only sheet
-    ws2 = wb.create_sheet(title="PSA 9 Only")
+    # Create PSA 9 only sheet (top 10 cards)
+    ws2 = wb.create_sheet(title="PSA 9 Only (Top 10)")
     
     # Filter for PSA 9 data only and simplify for single PSA level
     psa9_pivot = pivot_df[pivot_df['psa_level'] == '9'].copy()
@@ -378,7 +383,7 @@ def main():
         
         # Add simple formatted data (no nesting needed for single PSA level)
         current_row = 1
-        current_row = add_simple_formatted_data(ws2, psa9_simple, current_row, "PSA 9 Weekly Average Auction Prices")
+        current_row = add_simple_formatted_data(ws2, psa9_simple, current_row, "PSA 9 Weekly Average Auction Prices - Top 10 Cards")
     else:
         # Add message if no PSA 9 data
         ws2.cell(row=1, column=1, value="No PSA 9 data available")
@@ -387,11 +392,11 @@ def main():
     wb.save(excel_file)
     
     print(f"\nExcel file saved: {excel_file}")
-    print(f"  Sheet 1 'All PSA Levels': {pivot_df.shape}")
+    print(f"  Sheet 1 'Top 10 Cards - All PSA Levels': {pivot_df.shape}")
     if not psa9_pivot.empty:
-        print(f"  Sheet 2 'PSA 9 Only': {psa9_pivot.shape[0]} cards x {psa9_simple.shape[1]} columns")
+        print(f"  Sheet 2 'PSA 9 Only (Top 10)': {psa9_pivot.shape[0]} cards x {psa9_simple.shape[1]} columns")
     else:
-        print(f"  Sheet 2 'PSA 9 Only': No PSA 9 data available")
+        print(f"  Sheet 2 'PSA 9 Only (Top 10)': No PSA 9 data available")
     
     # Summary statistics
     print(f"\nSummary statistics:")
@@ -399,14 +404,15 @@ def main():
     print(f"  Weeks of data: {len([col for col in pivot_df.columns if col not in ['psa_level', 'card_name']])}")
     print(f"  Average transactions per week: {weekly_data['transaction_count'].mean():.1f}")
     
-    # Show cards ranked by lifecycle sales (as they appear in output)
-    print(f"\nCards ranked by lifecycle sales (as shown in output):")
-    for _, row in card_total_sales.head(10).iterrows():
+    # Show top 10 cards by lifecycle sales (as shown in output)
+    print(f"\nTop 10 cards by lifecycle sales (filtered output):")
+    for _, row in card_total_sales.iterrows():
         # Get total price points for this card
         card_price_point_total = card_price_points[card_price_points['card_name'] == row['card_name']]['card_price_point_count'].iloc[0] if not card_price_points[card_price_points['card_name'] == row['card_name']].empty else 0
         print(f"  {row['card_name']}: {row['total_sales_count']:,} lifecycle sales, {card_price_point_total:,} price points")
     
-    print(f"\nNote: Within each card, PSA levels are ordered by grade (10, 9, 8, 7... 0)")
+    print(f"\nNote: Output filtered to top 10 cards by lifecycle sales")
+    print(f"Within each card, PSA levels are ordered by grade (10, 9, 8, 7... 0)")
     print(f"'Price Points' column shows number of weeks with actual price data for each PSA level")
     
     # Show top 10 most valuable combinations
