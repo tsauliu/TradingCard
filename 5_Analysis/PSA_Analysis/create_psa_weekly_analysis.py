@@ -1,117 +1,16 @@
 #!/usr/bin/env python3
 """
 Create PSA auction price weekly analysis
-Weekly average prices by PSA level and card name with smart outlier detection
+Weekly average prices by PSA level and card name
 """
 
 import pandas as pd
 from google.cloud import bigquery
 from datetime import datetime
 import os
-import numpy as np
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
-
-def detect_outliers(df, price_col='auction_price', window_size=5, threshold=0.75):
-    """
-    Multi-pass outlier detection with IQR and extreme outlier handling
-    
-    Args:
-        df: DataFrame with price data
-        price_col: Column name for prices
-        window_size: Size of rolling window for median calculation
-        threshold: Threshold for rolling median detection (0.75 = 75%)
-    
-    Returns:
-        DataFrame with outliers removed
-    """
-    df = df.copy()
-    df = df.sort_values(['card_name', 'psa_level', 'auction_date']).reset_index(drop=True)
-    
-    total_count = len(df)
-    outlier_counts = {'extreme': 0, 'iqr': 0, 'rolling': 0}
-    
-    # Group by card_name and psa_level for outlier detection
-    def remove_outliers_group(group):
-        nonlocal outlier_counts
-        if len(group) < 3:  # Need at least 3 points for meaningful outlier detection
-            return group
-        
-        group = group.copy().reset_index(drop=True)
-        prices = group[price_col].values
-        
-        # Pass 1: Remove extreme outliers (>5x median)
-        group_median = np.median(prices)
-        extreme_mask = prices > (5 * group_median)
-        outlier_counts['extreme'] += extreme_mask.sum()
-        
-        if extreme_mask.any():
-            group = group[~extreme_mask].reset_index(drop=True)
-            prices = group[price_col].values
-        
-        if len(group) < 3:
-            return group
-        
-        # Pass 2: IQR-based outlier detection
-        Q1 = np.percentile(prices, 25)
-        Q3 = np.percentile(prices, 75)
-        IQR = Q3 - Q1
-        
-        if IQR > 0:  # Only apply if there's variance
-            lower_bound = Q1 - 1.5 * IQR
-            upper_bound = Q3 + 1.5 * IQR
-            iqr_mask = (prices < lower_bound) | (prices > upper_bound)
-            outlier_counts['iqr'] += iqr_mask.sum()
-            
-            if iqr_mask.any():
-                group = group[~iqr_mask].reset_index(drop=True)
-                prices = group[price_col].values
-        
-        if len(group) < window_size:
-            return group
-        
-        # Pass 3: Rolling median with tighter threshold
-        rolling_median = pd.Series(prices).rolling(window=window_size, center=True, min_periods=3).median()
-        rolling_median = rolling_median.fillna(np.median(prices))
-        
-        # Identify outliers with tighter threshold
-        outliers_mask = np.abs(prices - rolling_median) > (threshold * rolling_median)
-        
-        # Improved trend detection: require 5+ consecutive points and reasonable variance
-        trend_mask = np.zeros_like(outliers_mask, dtype=bool)
-        min_trend_length = 5
-        
-        for i in range(len(outliers_mask) - min_trend_length + 1):
-            trend_slice = outliers_mask[i:i+min_trend_length]
-            if trend_slice.all():
-                # Check if trend values are reasonably close to each other
-                trend_prices = prices[i:i+min_trend_length]
-                trend_cv = np.std(trend_prices) / np.mean(trend_prices)  # Coefficient of variation
-                
-                # Only preserve trend if coefficient of variation is < 0.5 (reasonable consistency)
-                if trend_cv < 0.5:
-                    trend_mask[i:i+min_trend_length] = True
-        
-        # Remove outliers that aren't part of legitimate trends
-        final_outliers = outliers_mask & ~trend_mask
-        outlier_counts['rolling'] += final_outliers.sum()
-        
-        return group[~final_outliers]
-    
-    cleaned_df = df.groupby(['card_name', 'psa_level']).apply(remove_outliers_group).reset_index(drop=True)
-    
-    total_removed = sum(outlier_counts.values())
-    print(f"Multi-pass outlier detection complete:")
-    print(f"  Original records: {total_count:,}")
-    print(f"  Extreme outliers removed (>5x median): {outlier_counts['extreme']:,}")
-    print(f"  IQR outliers removed: {outlier_counts['iqr']:,}")
-    print(f"  Rolling median outliers removed: {outlier_counts['rolling']:,}")
-    print(f"  Total outliers removed: {total_removed:,}")
-    print(f"  Records remaining: {len(cleaned_df):,}")
-    print(f"  Removal rate: {total_removed/total_count*100:.1f}%")
-    
-    return cleaned_df
 
 def add_nested_formatted_data(ws, df, start_row, title):
     """Add nested formatted data to worksheet with PSA level in A4 format, card names in B5 format"""
@@ -358,13 +257,9 @@ def main():
     print(f"  Price range: ${df['auction_price'].min():.2f} - ${df['auction_price'].max():,.2f}")
     print(f"  Date range: {df['auction_date'].min()} to {df['auction_date'].max()}")
     
-    # Skip outlier detection - use raw data
-    print(f"\nUsing raw data without outlier detection...")
-    cleaned_df = df
-    
     # Create weekly aggregation
-    print(f"Creating weekly aggregation...")
-    weekly_data = cleaned_df.groupby(['card_name', 'psa_level', 'week_start']).agg({
+    print(f"\nCreating weekly aggregation...")
+    weekly_data = df.groupby(['card_name', 'psa_level', 'week_start']).agg({
         'auction_price': ['mean', 'count'],
         'total_sales_count': 'first',  # Take first value since it should be same for each card/grade combo
         'psa_url': 'first'  # Take first URL for each card/grade combo
@@ -378,15 +273,11 @@ def main():
     print(f"  Unique card/PSA combinations: {weekly_data.groupby(['card_name', 'psa_level']).ngroups:,}")
     print(f"  Weeks covered: {weekly_data['week_start'].nunique()}")
     
-    # Use raw weekly data without creating artificial weeks
-    print(f"Using only weeks with actual sales data...")
-    complete_weekly_data = weekly_data
-    
     # Create pivot table with weeks as columns
-    print(f"Creating nested pivot table...")
+    print(f"\nCreating pivot table...")
     
     # Calculate number of weeks with price data for each card/PSA combination
-    weeks_with_prices = complete_weekly_data[complete_weekly_data['avg_price'].notnull()].groupby(['card_name', 'psa_level']).size().reset_index(name='weeks_with_prices')
+    weeks_with_prices = weekly_data[weekly_data['avg_price'].notnull()].groupby(['card_name', 'psa_level']).size().reset_index(name='weeks_with_prices')
     
     # Calculate price point count by card/PSA combination (for PSA level ranking within cards)
     card_psa_price_points = df.groupby(['card_name', 'psa_level']).size().reset_index(name='psa_price_point_count')
@@ -395,8 +286,7 @@ def main():
     card_price_points = df.groupby('card_name').size().reset_index(name='card_price_point_count')
     
     # Calculate total sales count by card for ranking cards
-    card_total_sales = complete_weekly_data.groupby('card_name')['total_sales_count'].first().reset_index()
-    # Only drop rows where total_sales_count is actually null (not 0)
+    card_total_sales = weekly_data.groupby('card_name')['total_sales_count'].first().reset_index()
     card_total_sales = card_total_sales[card_total_sales['total_sales_count'].notnull()]
     
     # Sort cards by lifecycle sales (as before)
@@ -416,18 +306,12 @@ def main():
     for _, row in card_psa_price_points.iterrows():
         card_psa_price_points_map[(row['card_name'], row['psa_level'])] = row['psa_price_point_count']
     
-    # Convert PSA level to numeric for proper sorting, handle string grades
-    def convert_psa_level(psa_str):
-        try:
-            return float(psa_str)
-        except:
-            return 0.0  # Handle any non-numeric grades
+    # Convert PSA level to numeric for proper sorting
+    weekly_data['psa_numeric'] = pd.to_numeric(weekly_data['psa_level'], errors='coerce').fillna(0)
+    weekly_data['card_order'] = weekly_data['card_name'].map(card_order)
     
-    complete_weekly_data['psa_numeric'] = complete_weekly_data['psa_level'].apply(convert_psa_level)
-    complete_weekly_data['card_order'] = complete_weekly_data['card_name'].map(card_order)
-    
-    # Create pivot table with multi-index (psa_level, card_name)
-    pivot_df = complete_weekly_data.pivot_table(
+    # Create pivot table
+    pivot_df = weekly_data.pivot_table(
         index=['card_order', 'psa_numeric', 'psa_level', 'card_name'], 
         columns='week_start', 
         values='avg_price',
@@ -454,15 +338,14 @@ def main():
     pivot_df['Lifecycle Sales'] = pivot_df['card_name'].map(card_sales_map)
     
     # Add PSA URL (get first non-null URL for each card/PSA combo)
-    card_psa_url_map = complete_weekly_data.groupby(['card_name', 'psa_level'])['psa_url'].first().to_dict()
+    card_psa_url_map = weekly_data.groupby(['card_name', 'psa_level'])['psa_url'].first().to_dict()
     pivot_df['PSA URL'] = pivot_df.apply(lambda row: card_psa_url_map.get((row['card_name'], row['psa_level']), ''), axis=1)
     
     # Reorder columns to have Price Points, Lifecycle Sales and URL first after card info
     date_cols = [col for col in pivot_df.columns if col not in ['psa_level', 'card_name', 'Price Points', 'Lifecycle Sales', 'PSA URL']]
     pivot_df = pivot_df[['psa_level', 'card_name', 'Price Points', 'Lifecycle Sales', 'PSA URL'] + date_cols]
     
-    print(f"Nested pivot table created: {pivot_df.shape[0]} rows x {pivot_df.shape[1]} columns")
-    print(f"  Raw data only - no forward-fill applied")
+    print(f"Pivot table created: {pivot_df.shape[0]} rows x {pivot_df.shape[1]} columns")
     
     # Create output directory if it doesn't exist
     output_dir = "../output"
