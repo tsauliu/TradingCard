@@ -5,15 +5,50 @@ Outputs:
 1. ASP weighted by Volume and Condition for each card
 2. Trading Volumes for each card
 Also saves product metadata to text file
+
+Usage:
+    python3 pokemon_top15_products.py [--scrape_date YYYY-MM-DD]
+    
+Example:
+    python3 pokemon_top15_products.py --scrape_date 2025-09-04
 """
 
 import pandas as pd
 from google.cloud import bigquery
 from datetime import datetime
 import os
+import argparse
+import sys
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
+
+def validate_scrape_date(client, scrape_date):
+    """Validate that scrape_date exists in the database"""
+    query = f"""
+    SELECT COUNT(*) as row_count
+    FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda` bda
+    INNER JOIN `rising-environs-456314-a3.tcg_data.tcg_metadata` meta
+        ON CAST(bda.product_id AS STRING) = CAST(meta.product_productId AS STRING)
+    WHERE meta.category_categoryId IN (3, 85)
+        AND bda.scrape_date = '{scrape_date}'
+    LIMIT 1
+    """
+    
+    result = client.query(query).to_dataframe()
+    return result['row_count'].iloc[0] > 0
+
+def get_available_scrape_dates(client):
+    """Get list of available scrape_dates"""
+    query = """
+    SELECT DISTINCT scrape_date
+    FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda`
+    ORDER BY scrape_date DESC
+    LIMIT 10
+    """
+    
+    result = client.query(query).to_dataframe()
+    return result['scrape_date'].tolist()
 
 def add_formatted_section(ws, df, start_row, title, is_price=False):
     """Add formatted data section to worksheet"""
@@ -86,17 +121,19 @@ def add_formatted_section(ws, df, start_row, title, is_price=False):
     
     return row_idx + 3
 
-def save_product_links(products_df, timestamp):
+def save_product_links(products_df, timestamp, scrape_date):
     """Save product links and metadata to text file"""
     output_dir = "../output"
     os.makedirs(output_dir, exist_ok=True)
     
-    text_file = f"{output_dir}/{timestamp}_pokemon_product_links.txt"
+    scrape_date_clean = scrape_date.replace('-', '')
+    text_file = f"{output_dir}/{timestamp}_pokemon_product_links_sd{scrape_date_clean}.txt"
     
     with open(text_file, 'w', encoding='utf-8') as f:
         f.write("=" * 80 + "\n")
         f.write("TOP 15 POKEMON PRODUCTS (EN + JP) - METADATA AND LINKS\n")
         f.write(f"Generated: {timestamp}\n")
+        f.write(f"Data Source: scrape_date={scrape_date}\n")
         f.write("=" * 80 + "\n\n")
         
         for idx, row in products_df.iterrows():
@@ -114,21 +151,50 @@ def save_product_links(products_df, timestamp):
     return text_file
 
 def main():
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Top 15 Pokemon Products Analysis')
+    parser.add_argument('--scrape_date', type=str, 
+                       help='Scrape date to analyze (YYYY-MM-DD format)',
+                       default='{scrape_date}')
+    
+    args = parser.parse_args()
+    scrape_date = args.scrape_date
+    
+    # Validate date format
+    try:
+        datetime.strptime(scrape_date, '%Y-%m-%d')
+    except ValueError:
+        print(f"Error: Invalid date format '{scrape_date}'. Please use YYYY-MM-DD format.")
+        sys.exit(1)
+    
     # Setup
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/home/caoliu/TradingCard/5_Analysis/service-account.json'
     client = bigquery.Client()
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     
-    print("Fetching top 15 Pokemon products (EN + JP)...")
+    # Validate scrape_date exists
+    print(f"Validating scrape_date={scrape_date}...")
+    if not validate_scrape_date(client, scrape_date):
+        print(f"Error: No data found for scrape_date={scrape_date}")
+        print("\nAvailable scrape_dates:")
+        available_dates = get_available_scrape_dates(client)
+        for date in available_dates:
+            print(f"  - {date}")
+        sys.exit(1)
+    
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    scrape_date_clean = scrape_date.replace('-', '')  # For filename
+    
+    print(f"Fetching top 15 Pokemon products (EN + JP) for scrape_date={scrape_date}...")
     
     # Get top 15 Pokemon products by lifecycle quantity
-    top_products_query = """
+    top_products_query = f"""
     WITH first_week_per_product AS (
         SELECT 
             product_id,
             MIN(DATE_TRUNC(bucket_start_date, WEEK(MONDAY))) as first_week
         FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda`
         WHERE bucket_start_date >= '2024-01-01'
+            AND scrape_date = '{scrape_date}'  -- Specific scrape_date filter
         GROUP BY product_id
     ),
     first_week_check AS (
@@ -141,6 +207,7 @@ def main():
             ON p.product_id = fw.product_id 
             AND DATE_TRUNC(p.bucket_start_date, WEEK(MONDAY)) = fw.first_week
         WHERE p.bucket_start_date >= '2024-01-01'
+            AND p.scrape_date = '{scrape_date}'  -- Specific scrape_date filter
         GROUP BY p.product_id, fw.first_week
         HAVING SUM(p.quantity_sold) > 0
     ),
@@ -166,6 +233,7 @@ def main():
             AND bda.quantity_sold IS NOT NULL 
             AND bda.market_price > 0
             AND bda.bucket_start_date >= '2024-01-01'
+            AND bda.scrape_date = '{scrape_date}'  -- Specific scrape_date filter
         GROUP BY bda.product_id
         HAVING lifecycle_asp > 5  -- ASP > $5 filter
     )
@@ -185,7 +253,7 @@ def main():
     print(f"Found {len(top_products_df)} top Pokemon products")
     
     # Save product links to text file
-    save_product_links(top_products_df, timestamp)
+    save_product_links(top_products_df, timestamp, scrape_date)
     
     # Get product IDs for detailed queries
     product_ids = top_products_df['product_id'].tolist()
@@ -212,7 +280,7 @@ def main():
         AND bda.bucket_start_date >= '2024-01-01'
         AND bda.market_price > 0
         AND bda.quantity_sold IS NOT NULL
-        AND bda.scrape_date = '2025-08-20'  -- Specific scrape_date filter
+        AND bda.scrape_date = '{scrape_date}'  -- Specific scrape_date filter
     GROUP BY bda.product_id, DATE_TRUNC(bda.bucket_start_date, WEEK(MONDAY))
     ORDER BY bda.product_id, week_start
     """
@@ -279,15 +347,19 @@ def main():
     output_dir = "../output"
     os.makedirs(output_dir, exist_ok=True)
     
-    # Create Excel file with two sections
-    excel_file = f"{output_dir}/{timestamp}_pokemon_top15_products.xlsx"
+    # Create Excel file with scrape_date in filename
+    excel_file = f"{output_dir}/{timestamp}_pokemon_top15_products_sd{scrape_date_clean}.xlsx"
     
     wb = Workbook()
     ws = wb.active
     ws.title = "Top 15 Pokemon Products"
     
+    # Add scrape_date info at top
+    info_cell = ws.cell(row=1, column=1, value=f"Data Source: scrape_date={scrape_date}")
+    info_cell.font = Font(italic=True, size=10)
+    
     # Add formatted sections
-    current_row = 1
+    current_row = 3
     
     # Section 1: Weighted ASP
     current_row = add_formatted_section(

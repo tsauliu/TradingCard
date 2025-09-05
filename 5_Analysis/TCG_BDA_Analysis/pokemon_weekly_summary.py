@@ -5,15 +5,50 @@ Outputs:
 1. ASP weighted by Condition and Volume
 2. Trading Volumes by Condition
 3. Unique Pokemon Products with Sales
+
+Usage:
+    python3 pokemon_weekly_summary.py [--scrape_date YYYY-MM-DD]
+    
+Example:
+    python3 pokemon_weekly_summary.py --scrape_date 2025-09-04
 """
 
 import pandas as pd
 from google.cloud import bigquery
 from datetime import datetime
 import os
+import argparse
+import sys
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
+
+def validate_scrape_date(client, scrape_date):
+    """Validate that scrape_date exists in the database"""
+    query = f"""
+    SELECT COUNT(*) as row_count
+    FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda` bda
+    INNER JOIN `rising-environs-456314-a3.tcg_data.tcg_metadata` meta
+        ON CAST(bda.product_id AS STRING) = CAST(meta.product_productId AS STRING)
+    WHERE meta.category_categoryId IN (3, 85)
+        AND bda.scrape_date = '{scrape_date}'
+    LIMIT 1
+    """
+    
+    result = client.query(query).to_dataframe()
+    return result['row_count'].iloc[0] > 0
+
+def get_available_scrape_dates(client):
+    """Get list of available scrape_dates"""
+    query = """
+    SELECT DISTINCT scrape_date
+    FROM `rising-environs-456314-a3.tcg_data.tcg_prices_bda`
+    ORDER BY scrape_date DESC
+    LIMIT 10
+    """
+    
+    result = client.query(query).to_dataframe()
+    return result['scrape_date'].tolist()
 
 def add_formatted_section(ws, df, start_row, title, is_price=False):
     """Add formatted data section to worksheet"""
@@ -85,15 +120,43 @@ def add_formatted_section(ws, df, start_row, title, is_price=False):
     return row_idx + 3
 
 def main():
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Pokemon Weekly Summary Analysis')
+    parser.add_argument('--scrape_date', type=str, 
+                       help='Scrape date to analyze (YYYY-MM-DD format)',
+                       default='2025-09-04')
+    
+    args = parser.parse_args()
+    scrape_date = args.scrape_date
+    
+    # Validate date format
+    try:
+        datetime.strptime(scrape_date, '%Y-%m-%d')
+    except ValueError:
+        print(f"Error: Invalid date format '{scrape_date}'. Please use YYYY-MM-DD format.")
+        sys.exit(1)
+    
     # Setup
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/home/caoliu/TradingCard/5_Analysis/service-account.json'
     client = bigquery.Client()
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     
-    print("Fetching Pokemon weekly data (scrape_date=2025-08-20)...")
+    # Validate scrape_date exists
+    print(f"Validating scrape_date={scrape_date}...")
+    if not validate_scrape_date(client, scrape_date):
+        print(f"Error: No data found for scrape_date={scrape_date}")
+        print("\nAvailable scrape_dates:")
+        available_dates = get_available_scrape_dates(client)
+        for date in available_dates:
+            print(f"  - {date}")
+        sys.exit(1)
+    
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    scrape_date_clean = scrape_date.replace('-', '')  # For filename
+    
+    print(f"Fetching Pokemon weekly data (scrape_date={scrape_date})...")
     
     # 1. Weighted ASP by Condition and Volume
-    asp_query = """
+    asp_query = f"""
     WITH pokemon_weekly AS (
         SELECT 
             condition,
@@ -109,7 +172,7 @@ def main():
             AND bda.condition IS NOT NULL 
             AND bda.condition != ''
             AND bda.bucket_start_date >= '2024-01-01'
-            AND bda.scrape_date = '2025-08-20'  -- Specific scrape_date filter
+            AND bda.scrape_date = '{scrape_date}'
         GROUP BY condition, DATE_TRUNC(bucket_start_date, WEEK(MONDAY))
     )
     SELECT 
@@ -124,7 +187,7 @@ def main():
     """
     
     # 2. Trading Volumes by Condition
-    volume_query = """
+    volume_query = f"""
     SELECT 
         condition,
         DATE_TRUNC(bucket_start_date, WEEK(MONDAY)) as week_start,
@@ -137,13 +200,13 @@ def main():
         AND bda.condition IS NOT NULL 
         AND bda.condition != ''
         AND bda.bucket_start_date >= '2024-01-01'
-        AND bda.scrape_date = '2025-08-20'  -- Specific scrape_date filter
+        AND bda.scrape_date = '{scrape_date}'
     GROUP BY condition, DATE_TRUNC(bucket_start_date, WEEK(MONDAY))
     ORDER BY condition, week_start
     """
     
     # 3. Unique Pokemon Products with Sales
-    unique_query = """
+    unique_query = f"""
     WITH weekly_unique AS (
         SELECT 
             DATE_TRUNC(bucket_start_date, WEEK(MONDAY)) as week_start,
@@ -154,7 +217,7 @@ def main():
         WHERE meta.category_categoryId IN (3, 85)  -- Pokemon and Pokemon Japan categories
             AND bda.quantity_sold > 0
             AND bda.bucket_start_date >= '2024-01-01'
-            AND bda.scrape_date = '2025-08-20'  -- Specific scrape_date filter
+            AND bda.scrape_date = '{scrape_date}'
         GROUP BY DATE_TRUNC(bucket_start_date, WEEK(MONDAY))
     )
     SELECT 
@@ -217,15 +280,19 @@ def main():
     output_dir = "../output"
     os.makedirs(output_dir, exist_ok=True)
     
-    # Create Excel file
-    excel_file = f"{output_dir}/{timestamp}_pokemon_weekly_summary.xlsx"
+    # Create Excel file with scrape_date in filename
+    excel_file = f"{output_dir}/{timestamp}_pokemon_weekly_summary_sd{scrape_date_clean}.xlsx"
     
     wb = Workbook()
     ws = wb.active
     ws.title = "Pokemon Weekly Summary"
     
+    # Add scrape_date info at top
+    info_cell = ws.cell(row=1, column=1, value=f"Data Source: scrape_date={scrape_date}")
+    info_cell.font = Font(italic=True, size=10)
+    
     # Add formatted sections
-    current_row = 1
+    current_row = 3
     
     # Section 1: Weighted ASP
     current_row = add_formatted_section(
@@ -252,6 +319,7 @@ def main():
     wb.save(excel_file)
     
     print(f"\nExcel file saved: {excel_file}")
+    print(f"Scrape Date: {scrape_date}")
     print(f"ASP conditions: {sorted(asp_pivot['condition'].tolist())}")
     print(f"Volume conditions: {sorted(volume_pivot['condition'].tolist())}")
     print(f"Week range: {asp_pivot.columns[1]} to {asp_pivot.columns[-1]}")
