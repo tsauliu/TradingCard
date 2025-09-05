@@ -10,7 +10,7 @@ import pandas as pd
 
 def pull_weekly_data():
     # Set up credentials
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/home/caoliu/TradingCard/analysis/service-account.json'
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/home/caoliu/TradingCard/5_Analysis/service-account.json'
     client = bigquery.Client()
 
     # SQL query for weekly mid_price by category_id with unique product count

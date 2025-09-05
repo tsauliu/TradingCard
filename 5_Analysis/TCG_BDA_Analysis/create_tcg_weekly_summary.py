@@ -80,7 +80,7 @@ def add_formatted_data(ws, df, start_row, title):
 
 def main():
     # Set up credentials
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/home/caoliu/TradingCard/Analysis/service-account.json'
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/home/caoliu/TradingCard/5_Analysis/service-account.json'
     client = bigquery.Client()
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     

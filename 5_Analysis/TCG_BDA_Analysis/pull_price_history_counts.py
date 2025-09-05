@@ -75,12 +75,12 @@ def create_formatted_excel(df, filename):
 
 def main():
     # Set up credentials
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/home/caoliu/TradingCard/Analysis/service-account.json'
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/home/caoliu/TradingCard/5_Analysis/service-account.json'
     client = bigquery.Client()
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     
     # Load Categories.csv for category name lookup
-    categories_df = pd.read_csv('/home/caoliu/TradingCard/Analysis/Categories.csv')
+    categories_df = pd.read_csv('/home/caoliu/TradingCard/5_Analysis/TCG_BDA_Analysis/Categories.csv')
     categories_lookup = dict(zip(categories_df['categoryId'], categories_df['name']))
     
     # Create eBay-friendly search names mapping - aggressively combine similar terms
