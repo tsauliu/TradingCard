@@ -281,7 +281,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     
     # Create Excel file with scrape_date in filename
-    excel_file = f"{output_dir}/{timestamp}_pokemon_weekly_summary_sd{scrape_date_clean}.xlsx"
+    excel_file = f"{output_dir}/sd{scrape_date_clean}_{timestamp}_pokemon_weekly_summary.xlsx"
     
     wb = Workbook()
     ws = wb.active
