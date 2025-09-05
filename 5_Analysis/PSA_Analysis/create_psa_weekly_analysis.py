@@ -8,6 +8,8 @@ import pandas as pd
 from google.cloud import bigquery
 from datetime import datetime
 import os
+import sys
+import argparse
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
@@ -190,12 +192,43 @@ def add_simple_formatted_data(ws, df, start_row, title):
     return current_row + 2
 
 def main():
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Create PSA weekly analysis for specific scrape date')
+    parser.add_argument('--date', required=True, 
+                       help='Date of data scraping (YYYY-MM-DD format or "latest")')
+    args = parser.parse_args()
+    
     # Set up credentials
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/home/caoliu/TradingCard/5_Analysis/service-account.json'
     client = bigquery.Client()
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     
-    # Query to pull PSA auction price data with lifecycle sales and URL
+    # Handle date parameter
+    if args.date == 'latest':
+        # Get the most recent scrape date
+        latest_query = """
+        SELECT MAX(DATE(scraped_at)) as latest_date
+        FROM `rising-environs-456314-a3.tcg_data.psa_auction_prices`
+        WHERE scraped_at IS NOT NULL
+        """
+        print("Fetching latest scrape date...")
+        latest_df = client.query(latest_query).to_dataframe()
+        if latest_df.empty or latest_df['latest_date'].iloc[0] is None:
+            print("Error: No data found in the table")
+            sys.exit(1)
+        scrape_date = latest_df['latest_date'].iloc[0]
+        scrape_date_str = scrape_date.strftime('%Y-%m-%d')
+        print(f"Using latest scrape date: {scrape_date_str}")
+    else:
+        # Validate date format
+        try:
+            scrape_date = datetime.strptime(args.date, '%Y-%m-%d').date()
+            scrape_date_str = args.date
+        except ValueError:
+            print(f"Error: Invalid date format '{args.date}'. Use YYYY-MM-DD format or 'latest'.")
+            sys.exit(1)
+    
+    # Query to pull PSA auction price data with lifecycle sales and URL - filtered by scraped_at date
     query = """
     WITH sales_data AS (
       SELECT 
@@ -204,9 +237,13 @@ def main():
           sale_price as auction_price,
           psa_url,
           PARSE_DATE('%m/%d/%Y', sale_date) as auction_date,
-          DATE_TRUNC(PARSE_DATE('%m/%d/%Y', sale_date), WEEK(MONDAY)) as week_start
+          DATE_TRUNC(PARSE_DATE('%m/%d/%Y', sale_date), WEEK(MONDAY)) as week_start,
+          scraped_at
       FROM `rising-environs-456314-a3.tcg_data.psa_auction_prices`
       WHERE record_type = 'sale'
+        -- Efficient partition filtering using timestamp range
+        AND scraped_at >= TIMESTAMP(@scrape_date)
+        AND scraped_at < TIMESTAMP(DATE_ADD(@scrape_date, INTERVAL 1 DAY))
         AND sale_price IS NOT NULL 
         AND sale_price > 0
         AND card_name IS NOT NULL
@@ -224,6 +261,9 @@ def main():
           psa_url
       FROM `rising-environs-456314-a3.tcg_data.psa_auction_prices`
       WHERE record_type = 'summary'
+        -- Efficient partition filtering using timestamp range
+        AND scraped_at >= TIMESTAMP(@scrape_date)
+        AND scraped_at < TIMESTAMP(DATE_ADD(@scrape_date, INTERVAL 1 DAY))
         AND total_sales_count IS NOT NULL
     )
     SELECT 
@@ -233,29 +273,59 @@ def main():
         COALESCE(sum.total_sales_count, 0) as total_sales_count,
         COALESCE(s.psa_url, sum.psa_url) as psa_url,
         s.auction_date,
-        s.week_start
+        s.week_start,
+        s.scraped_at
     FROM sales_data s
     LEFT JOIN summary_data sum ON s.card_name = sum.card_name AND s.psa_level = sum.psa_level
     ORDER BY s.card_name, s.psa_level, s.auction_date
     """
     
-    print("Executing PSA auction price query...")
+    print(f"Executing PSA auction price query for scrape date: {scrape_date_str}...")
+    
+    # Configure query with parameter for safe and efficient execution
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("scrape_date", "DATE", scrape_date)
+        ]
+    )
+    
     try:
-        df = client.query(query).to_dataframe()
+        df = client.query(query, job_config=job_config).to_dataframe()
         print(f"Query completed. Retrieved {len(df):,} rows.")
     except Exception as e:
         print(f"Error executing query: {e}")
         return
     
     if df.empty:
-        print("No data returned. Exiting.")
+        print(f"\nNo data found for scrape date {scrape_date_str}")
+        print("\nChecking available scrape dates...")
+        check_query = """
+        SELECT DISTINCT DATE(scraped_at) as scrape_date,
+               COUNT(*) as record_count,
+               COUNT(DISTINCT card_name) as unique_cards
+        FROM `rising-environs-456314-a3.tcg_data.psa_auction_prices`
+        WHERE scraped_at IS NOT NULL
+        GROUP BY scrape_date
+        ORDER BY scrape_date DESC
+        LIMIT 10
+        """
+        available_dates = client.query(check_query).to_dataframe()
+        if not available_dates.empty:
+            print("\nAvailable scrape dates (most recent):")
+            for _, row in available_dates.iterrows():
+                print(f"  - {row['scrape_date']}: {row['record_count']:,} records, {row['unique_cards']:,} unique cards")
+            print("\nPlease run the script with one of these dates or use --date latest")
         return
     
-    print(f"\nData summary:")
+    print(f"\nData summary for scrape date {scrape_date_str}:")
+    if 'scraped_at' in df.columns:
+        scrape_time_min = df['scraped_at'].min()
+        scrape_time_max = df['scraped_at'].max()
+        print(f"  Scraping session timeframe: {scrape_time_min} to {scrape_time_max}")
     print(f"  Unique cards: {df['card_name'].nunique():,}")
     print(f"  PSA levels: {sorted(df['psa_level'].unique())}")
     print(f"  Price range: ${df['auction_price'].min():.2f} - ${df['auction_price'].max():,.2f}")
-    print(f"  Date range: {df['auction_date'].min()} to {df['auction_date'].max()}")
+    print(f"  Sales date range: {df['auction_date'].min()} to {df['auction_date'].max()}")
     
     # Create weekly aggregation
     print(f"\nCreating weekly aggregation...")
@@ -356,8 +426,8 @@ def main():
     output_dir = "../output"
     os.makedirs(output_dir, exist_ok=True)
     
-    # Create formatted Excel file
-    excel_file = f"{output_dir}/{timestamp}_psa_weekly_analysis.xlsx"
+    # Create formatted Excel file with scrape date in filename
+    excel_file = f"{output_dir}/{timestamp}_psa_weekly_analysis_scraped_{scrape_date_str}.xlsx"
     
     # Create workbook with multiple sheets
     wb = Workbook()
@@ -392,6 +462,7 @@ def main():
     wb.save(excel_file)
     
     print(f"\nExcel file saved: {excel_file}")
+    print(f"  Data from scrape date: {scrape_date_str}")
     print(f"  Sheet 1 'Top 10 Cards - All PSA Levels': {pivot_df.shape}")
     if not psa9_pivot.empty:
         print(f"  Sheet 2 'PSA 9 Only (Top 10)': {psa9_pivot.shape[0]} cards x {psa9_simple.shape[1]} columns")
@@ -411,7 +482,7 @@ def main():
         card_price_point_total = card_price_points[card_price_points['card_name'] == row['card_name']]['card_price_point_count'].iloc[0] if not card_price_points[card_price_points['card_name'] == row['card_name']].empty else 0
         print(f"  {row['card_name']}: {row['total_sales_count']:,} lifecycle sales, {card_price_point_total:,} price points")
     
-    print(f"\nNote: Output filtered to top 10 cards by lifecycle sales")
+    print(f"\nNote: Output filtered to top 10 cards by lifecycle sales from scrape date {scrape_date_str}")
     print(f"Within each card, PSA levels are ordered by grade (10, 9, 8, 7... 0)")
     print(f"'Price Points' column shows number of weeks with actual price data for each PSA level")
     
