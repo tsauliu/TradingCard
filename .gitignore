@@ -4,6 +4,7 @@
 *.xlsx
 *.zip
 *.log
+*.txt
 
 # Service account keys
 service-account.json
