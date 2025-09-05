@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TCG Data Processor - Analyzes JSON files and uploads to BigQuery
+TCG Data Processor - Analyzes JSON files and uploads to BigQuery with deduplication tracking
 """
 
 import json
@@ -12,9 +12,10 @@ import zipfile
 import shutil
 import psutil
 import gc
+import csv
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple, Generator
-from datetime import datetime, timezone
+from typing import List, Dict, Any, Optional, Tuple, Generator, Set
+from datetime import datetime, timezone, date
 import time
 
 import pandas as pd
@@ -38,12 +39,12 @@ load_dotenv()
 
 
 class TCGDataProcessor:
-    """Main class for processing TCG data and uploading to BigQuery"""
+    """Main class for processing TCG data and uploading to BigQuery with deduplication"""
     
     def __init__(self, project_id: str = None, dataset_id: str = "tcg_data", 
                  table_id: str = "tcg_prices_bda", json_directory: str = "./product_details",
                  upload_directory: str = None, batch_size: int = 1000, 
-                 max_memory_mb: int = 1024):
+                 max_memory_mb: int = 1024, tracking_csv: str = "uploaded_files_tracker.csv"):
         """Initialize the processor with BigQuery configuration
         
         Args:
@@ -60,6 +61,9 @@ class TCGDataProcessor:
         self.upload_directory = Path(upload_directory or "~/fileuploader/uploads").expanduser()
         self.batch_size = batch_size  # Number of files to process per batch
         self.max_memory_mb = max_memory_mb  # Maximum memory threshold in MB
+        self.tracking_csv = tracking_csv  # CSV file to track uploaded files
+        self.uploaded_files = self._load_uploaded_files()  # Set of already uploaded files
+        self.current_scrape_date = None  # Will be set when processing a ZIP
         
         # Validate configuration
         if not self.project_id:
@@ -71,6 +75,8 @@ class TCGDataProcessor:
         logger.info(f"JSON Directory: {self.json_directory}")
         logger.info(f"Upload Directory: {self.upload_directory}")
         logger.info(f"Batch Size: {self.batch_size} files, Max Memory: {self.max_memory_mb} MB")
+        logger.info(f"Tracking CSV: {self.tracking_csv}")
+        logger.info(f"Previously uploaded files: {len(self.uploaded_files)}")
         
         # Initialize BigQuery client
         self.client = bigquery.Client(project=self.project_id)
@@ -111,9 +117,8 @@ class TCGDataProcessor:
             bigquery.SchemaField("high_sale_price", "FLOAT"),
             bigquery.SchemaField("high_sale_price_with_shipping", "FLOAT"),
             bigquery.SchemaField("transaction_count", "INTEGER"),
-            bigquery.SchemaField("file_processed_at", "TIMESTAMP"),
-            bigquery.SchemaField("source_file", "STRING", mode="NULLABLE"),
-            bigquery.SchemaField("source_directory", "STRING", mode="NULLABLE")
+            bigquery.SchemaField("scrape_date", "DATE", mode="REQUIRED"),
+            bigquery.SchemaField("source_file", "STRING", mode="NULLABLE")
         ]
     
     @staticmethod
@@ -123,6 +128,114 @@ class TCGDataProcessor:
         if match:
             return match.group(1)
         raise ValueError(f"Invalid filename format: {filename}")
+    
+    def _load_uploaded_files(self) -> Set[str]:
+        """Load set of already uploaded files from tracking CSV
+        
+        Returns:
+            Set of file paths that have been uploaded
+        """
+        uploaded = set()
+        if Path(self.tracking_csv).exists():
+            try:
+                with open(self.tracking_csv, 'r', newline='') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        # Store as tuple of (filepath, scrape_date) for unique identification
+                        uploaded.add((row['filepath'], row['scrape_date']))
+                logger.info(f"Loaded {len(uploaded)} previously uploaded files from tracker")
+            except Exception as e:
+                logger.warning(f"Error loading tracking CSV: {e}")
+        else:
+            logger.info("No existing tracking CSV found - starting fresh")
+        return uploaded
+    
+    def _save_uploaded_file(self, filepath: str, scrape_date: str, record_count: int):
+        """Save uploaded file info to tracking CSV
+        
+        Args:
+            filepath: Path to the uploaded file
+            scrape_date: Scrape date from ZIP filename
+            record_count: Number of records uploaded from this file
+        """
+        file_exists = Path(self.tracking_csv).exists()
+        
+        try:
+            with open(self.tracking_csv, 'a', newline='') as f:
+                fieldnames = ['filepath', 'scrape_date', 'upload_timestamp', 'record_count']
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                
+                # Write header if file is new
+                if not file_exists:
+                    writer.writeheader()
+                
+                writer.writerow({
+                    'filepath': filepath,
+                    'scrape_date': scrape_date,
+                    'upload_timestamp': datetime.now(timezone.utc).isoformat(),
+                    'record_count': record_count
+                })
+                
+            # Add to in-memory set
+            self.uploaded_files.add((filepath, scrape_date))
+            
+        except Exception as e:
+            logger.error(f"Failed to save to tracking CSV: {e}")
+    
+    def _is_file_uploaded(self, filepath: str, scrape_date: str) -> bool:
+        """Check if a file has already been uploaded
+        
+        Args:
+            filepath: Path to check
+            scrape_date: Scrape date for this batch
+            
+        Returns:
+            True if file was already uploaded, False otherwise
+        """
+        return (filepath, scrape_date) in self.uploaded_files
+    
+    @staticmethod
+    def _extract_date_from_zip_name(zip_path: Path) -> Optional[str]:
+        """Extract date from ZIP filename
+        
+        Expected formats:
+        - tcg_data_2025-01-15.zip -> 2025-01-15
+        - data_20250115.zip -> 2025-01-15
+        - product_details_2025-01.zip -> 2025-01-01 (assumes first of month)
+        
+        Args:
+            zip_path: Path to ZIP file
+            
+        Returns:
+            Date string in YYYY-MM-DD format or None if no date found
+        """
+        filename = zip_path.stem  # Remove .zip extension
+        
+        # Try different date patterns
+        patterns = [
+            (r'(\d{4})-(\d{2})-(\d{2})', lambda m: f"{m.group(1)}-{m.group(2)}-{m.group(3)}"),  # YYYY-MM-DD
+            (r'(\d{4})(\d{2})(\d{2})', lambda m: f"{m.group(1)}-{m.group(2)}-{m.group(3)}"),      # YYYYMMDD
+            (r'(\d{4})-(\d{2})', lambda m: f"{m.group(1)}-{m.group(2)}-01"),                       # YYYY-MM
+            (r'(\d{4})_(\d{2})_(\d{2})', lambda m: f"{m.group(1)}-{m.group(2)}-{m.group(3)}"),    # YYYY_MM_DD
+        ]
+        
+        for pattern, formatter in patterns:
+            match = re.search(pattern, filename)
+            if match:
+                try:
+                    date_str = formatter(match)
+                    # Validate it's a real date
+                    datetime.strptime(date_str, "%Y-%m-%d")
+                    logger.info(f"Extracted scrape date from ZIP name: {date_str}")
+                    return date_str
+                except ValueError:
+                    continue
+        
+        # If no date found in filename, use file modification time
+        logger.warning(f"No date pattern found in ZIP filename: {filename}")
+        logger.info("Using ZIP file modification time as scrape date")
+        mod_time = datetime.fromtimestamp(zip_path.stat().st_mtime)
+        return mod_time.strftime("%Y-%m-%d")
     
     def find_latest_zip(self) -> Optional[Path]:
         """Find the most recent ZIP file in the upload directory
@@ -149,16 +262,11 @@ class TCGDataProcessor:
         
         return latest_zip
     
-    def extract_zip(self, zip_path: Path, extract_to: str = None, clean_existing: bool = True, 
-                    preserve_structure: bool = False, handle_duplicates: str = "rename") -> Tuple[bool, str]:
-        """Extract ZIP file to specified directory
+    def copy_and_extract_zip(self, zip_path: Path) -> Tuple[bool, str]:
+        """Copy ZIP file from upload directory and extract with preserved structure
         
         Args:
-            zip_path: Path to the ZIP file to extract
-            extract_to: Directory to extract to (default: self.json_directory)
-            clean_existing: Whether to clean existing files in the target directory
-            preserve_structure: Whether to preserve ZIP's directory structure
-            handle_duplicates: How to handle duplicate filenames ('rename', 'skip', 'overwrite')
+            zip_path: Path to the ZIP file to copy and extract
         
         Returns:
             Tuple of (success: bool, message: str)
@@ -169,23 +277,30 @@ class TCGDataProcessor:
         if not zipfile.is_zipfile(zip_path):
             return False, f"File is not a valid ZIP: {zip_path}"
         
-        target_dir = Path(extract_to or self.json_directory)
+        # Extract scrape date from ZIP filename
+        self.current_scrape_date = self._extract_date_from_zip_name(zip_path)
+        logger.info(f"Processing ZIP with scrape date: {self.current_scrape_date}")
+        
+        # Create extraction directory based on ZIP name and scrape date
+        extract_dir = Path(self.json_directory) / f"{zip_path.stem}_{self.current_scrape_date.replace('-', '')}"
         
         try:
             # Create target directory if it doesn't exist
-            target_dir.mkdir(parents=True, exist_ok=True)
+            extract_dir.mkdir(parents=True, exist_ok=True)
             
-            # Clean existing JSON files if requested
-            if clean_existing and target_dir.exists():
-                existing_files = list(target_dir.glob("*.json"))
-                if existing_files:
-                    logger.info(f"Cleaning {len(existing_files)} existing JSON files from {target_dir}")
-                    for file in existing_files:
-                        file.unlink()
+            # Copy ZIP file to working directory for backup
+            backup_dir = Path("./zip_backups")
+            backup_dir.mkdir(exist_ok=True)
+            backup_path = backup_dir / f"{zip_path.stem}_{self.current_scrape_date.replace('-', '')}.zip"
             
-            # Extract the ZIP file
-            logger.info(f"Extracting {zip_path.name} to {target_dir}")
-            logger.info(f"Options: preserve_structure={preserve_structure}, handle_duplicates={handle_duplicates}")
+            if not backup_path.exists():
+                logger.info(f"Copying ZIP file to backup: {backup_path}")
+                shutil.copy2(zip_path, backup_path)
+            else:
+                logger.info(f"Backup already exists: {backup_path}")
+            
+            # Extract the ZIP file preserving structure
+            logger.info(f"Extracting {zip_path.name} to {extract_dir}")
             
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 # Get info about ZIP contents
@@ -194,100 +309,25 @@ class TCGDataProcessor:
                 
                 logger.info(f"ZIP contains {len(file_list)} files, {len(json_files)} JSON files")
                 
-                # If preserving structure, extract and return
-                if preserve_structure:
-                    # Create subdirectory based on ZIP filename and date
-                    zip_subdir = target_dir / f"{zip_path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                    zip_subdir.mkdir(parents=True, exist_ok=True)
-                    zip_ref.extractall(zip_subdir)
-                    
-                    # Count extracted files
-                    extracted_json_files = list(zip_subdir.glob("**/*.json"))
-                    logger.info(f"Preserved structure: {len(extracted_json_files)} JSON files in {zip_subdir}")
-                    return True, f"Extracted {len(extracted_json_files)} JSON files to {zip_subdir} with preserved structure"
-                
-                # Extract all files for flattening
-                zip_ref.extractall(target_dir)
+                # Extract all files preserving structure
+                zip_ref.extractall(extract_dir)
             
-            # If files were extracted to a subdirectory, flatten them with duplicate handling
-            extracted_subdirs = [d for d in target_dir.iterdir() if d.is_dir()]
-            if extracted_subdirs and not list(target_dir.glob("*.json")):
-                # Files might be in subdirectories
-                logger.info("Flattening directory structure with duplicate handling...")
-                
-                # Track files we've seen to detect duplicates
-                seen_files = {}
-                duplicate_count = 0
-                skipped_count = 0
-                renamed_count = 0
-                
-                for subdir in extracted_subdirs:
-                    json_files_in_subdir = list(subdir.glob("**/*.json"))
-                    if json_files_in_subdir:
-                        logger.info(f"Processing {len(json_files_in_subdir)} JSON files from {subdir.name}")
-                        
-                        for json_file in json_files_in_subdir:
-                            base_name = json_file.name
-                            
-                            # Check for duplicates
-                            if base_name in seen_files:
-                                duplicate_count += 1
-                                
-                                if handle_duplicates == "skip":
-                                    logger.debug(f"Skipping duplicate: {base_name} from {subdir.name}")
-                                    skipped_count += 1
-                                    continue
-                                elif handle_duplicates == "rename":
-                                    # Create unique name with directory prefix or counter
-                                    if base_name == "_summary.json":
-                                        # Special handling for summary files
-                                        dir_prefix = subdir.name.replace("product_details_", "").replace("2025-09/", "")
-                                        new_name = f"{dir_prefix}_{base_name}"
-                                    else:
-                                        # Add counter for other duplicates
-                                        counter = 1
-                                        new_name = f"{json_file.stem}_{counter}{json_file.suffix}"
-                                        while (target_dir / new_name).exists():
-                                            counter += 1
-                                            new_name = f"{json_file.stem}_{counter}{json_file.suffix}"
-                                    
-                                    target_path = target_dir / new_name
-                                    logger.debug(f"Renaming duplicate: {base_name} -> {new_name}")
-                                    renamed_count += 1
-                                else:  # overwrite
-                                    target_path = target_dir / base_name
-                                    logger.debug(f"Overwriting: {base_name}")
-                            else:
-                                target_path = target_dir / base_name
-                                seen_files[base_name] = str(subdir.name)
-                            
-                            shutil.move(str(json_file), str(target_path))
-                        
-                        # Clean up empty subdirectory
-                        if subdir.exists() and not any(subdir.iterdir()):
-                            shutil.rmtree(subdir, ignore_errors=True)
-                
-                if duplicate_count > 0:
-                    logger.warning(f"Found {duplicate_count} duplicate filenames: "
-                                 f"renamed={renamed_count}, skipped={skipped_count}, "
-                                 f"overwritten={duplicate_count - renamed_count - skipped_count}")
+            # Count extracted files
+            extracted_json_files = list(extract_dir.glob("**/*.json"))
+            logger.info(f"Successfully extracted {len(extracted_json_files)} JSON files with preserved structure")
+            logger.info(f"Extraction directory: {extract_dir}")
             
-            # Verify extraction
-            extracted_json_files = list(target_dir.glob("*.json"))
+            # Update json_directory to point to the extracted location
+            self.json_directory = str(extract_dir)
             
-            if not extracted_json_files:
-                return False, f"No JSON files found after extraction"
-            
-            logger.info(f"Successfully extracted {len(extracted_json_files)} JSON files")
-            return True, f"Extracted {len(extracted_json_files)} JSON files from {zip_path.name}"
+            return True, f"Extracted {len(extracted_json_files)} JSON files to {extract_dir}"
             
         except zipfile.BadZipFile as e:
             return False, f"Corrupt ZIP file: {e}"
         except Exception as e:
             return False, f"Extraction failed: {e}"
     
-    def process_latest_zip(self, preserve_structure: bool = False, 
-                          handle_duplicates: str = "rename") -> Tuple[bool, str]:
+    def process_latest_zip(self) -> Tuple[bool, str]:
         """Find and process the latest ZIP file from upload directory
         
         Returns:
@@ -302,18 +342,14 @@ class TCGDataProcessor:
         if not latest_zip:
             return False, "No ZIP files found to process"
         
-        # Extract ZIP with options
-        success, message = self.extract_zip(
-            latest_zip, 
-            preserve_structure=preserve_structure,
-            handle_duplicates=handle_duplicates
-        )
+        # Copy and extract ZIP with preserved structure
+        success, message = self.copy_and_extract_zip(latest_zip)
         if not success:
             logger.error(f"Failed to extract ZIP: {message}")
             return False, message
         
         logger.info(message)
-        return True, f"Ready to process data from {latest_zip.name}"
+        return True, f"Ready to process data from {latest_zip.name} with scrape_date={self.current_scrape_date}"
     
     def _process_json_file(self, file_path: Path, add_metadata: bool = False) -> List[Dict[str, Any]]:
         """Process a single JSON file and return flattened records
@@ -355,16 +391,14 @@ class TCGDataProcessor:
                 'average_daily_transaction_count': result.get('averageDailyTransactionCount'),
                 'total_quantity_sold': result.get('totalQuantitySold'),
                 'total_transaction_count': result.get('totalTransactionCount'),
-                'file_processed_at': datetime.now(timezone.utc)
+                'scrape_date': self.current_scrape_date  # Use scrape_date from ZIP
             }
             
-            # Add source metadata (required for schema, but can be None)
+            # Add source metadata
             if add_metadata:
                 base_info['source_file'] = str(file_path.relative_to(Path(self.json_directory)))
-                base_info['source_directory'] = file_path.parent.name
             else:
                 base_info['source_file'] = None
-                base_info['source_directory'] = None
             
             # Process price history buckets
             buckets = result.get('buckets', [])
@@ -405,7 +439,7 @@ class TCGDataProcessor:
         for i in range(0, len(json_files), batch_size):
             yield json_files[i:i + batch_size]
     
-    def _process_batch(self, file_batch: List[Path], add_metadata: bool = False) -> pd.DataFrame:
+    def _process_batch(self, file_batch: List[Path], add_metadata: bool = False) -> Tuple[pd.DataFrame, List[Tuple[Path, int]]]:
         """Process a batch of JSON files and return a DataFrame
         
         Args:
@@ -413,20 +447,30 @@ class TCGDataProcessor:
             add_metadata: Whether to add source file metadata
         
         Returns:
-            DataFrame with processed records
+            Tuple of (DataFrame with processed records, List of (filepath, record_count))
         """
         batch_records = []
+        processed_files = []  # Track files and their record counts
         
         for json_file in file_batch:
+            # Check if file was already uploaded for this scrape_date
+            file_key = str(json_file.relative_to(Path(self.json_directory)))
+            
+            if self._is_file_uploaded(file_key, self.current_scrape_date):
+                logger.debug(f"Skipping already uploaded file: {file_key}")
+                continue
+            
             try:
                 records = self._process_json_file(json_file, add_metadata=add_metadata)
-                batch_records.extend(records)
+                if records:
+                    batch_records.extend(records)
+                    processed_files.append((file_key, len(records)))
             except Exception as e:
                 logger.debug(f"Error processing {json_file.name}: {e}")
                 continue
         
         if not batch_records:
-            return pd.DataFrame()
+            return pd.DataFrame(), processed_files
         
         # Convert to DataFrame and clean data
         df = pd.DataFrame(batch_records)
@@ -447,10 +491,10 @@ class TCGDataProcessor:
         if 'bucket_start_date' in df.columns:
             df['bucket_start_date'] = pd.to_datetime(df['bucket_start_date'], errors='coerce')
         
-        if 'file_processed_at' in df.columns:
-            df['file_processed_at'] = pd.to_datetime(df['file_processed_at'], errors='coerce')
+        if 'scrape_date' in df.columns:
+            df['scrape_date'] = pd.to_datetime(df['scrape_date'], errors='coerce')
         
-        return df
+        return df, processed_files
     
     def process_all_files_batched(self, recursive: bool = True, add_metadata: bool = False,
                                   mode: str = "replace") -> int:
@@ -512,8 +556,8 @@ class TCGDataProcessor:
             logger.info(f"Processing batch {batch_num} ({len(file_batch)} files) - "
                        f"Memory: {current_memory:.2f} MB")
             
-            # Process batch
-            batch_df = self._process_batch(file_batch, add_metadata=add_metadata)
+            # Process batch (returns DataFrame and list of processed files)
+            batch_df, processed_file_info = self._process_batch(file_batch, add_metadata=add_metadata)
             
             if not batch_df.empty:
                 # Upload batch to BigQuery
@@ -528,6 +572,12 @@ class TCGDataProcessor:
                     total_records += batch_records
                     first_batch = False
                     
+                    # Save uploaded files to tracking CSV
+                    for filepath, record_count in processed_file_info:
+                        self._save_uploaded_file(filepath, self.current_scrape_date, record_count)
+                    
+                    logger.info(f"Batch {batch_num}: Uploaded {len(processed_file_info)} files with {batch_records} records")
+                    
                     # Clear DataFrame from memory
                     del batch_df
                     gc.collect()
@@ -535,6 +585,11 @@ class TCGDataProcessor:
                 except Exception as e:
                     logger.error(f"Failed to upload batch {batch_num}: {e}")
                     error_count += len(file_batch)
+            else:
+                # Even if no new records, count skipped files
+                skipped = len(file_batch) - len(processed_file_info)
+                if skipped > 0:
+                    logger.info(f"Batch {batch_num}: Skipped {skipped} already uploaded files")
             
             processed_files += len(file_batch)
             
@@ -720,21 +775,19 @@ class TCGDataProcessor:
                    f"Time: {elapsed/60:.1f} minutes, "
                    f"Rate: {len(df)/elapsed:.0f} records/sec")
     
-    def run(self, mode: str = "append", process_zip: bool = False,
-            preserve_structure: bool = False, handle_duplicates: str = "rename",
-            use_batching: bool = True):
-        """Main execution method
+    def run(self, mode: str = "append", process_zip: bool = False, use_batching: bool = True):
+        """Main execution method with deduplication tracking
         
         Args:
             mode: Upload mode - 'replace' or 'append'
             process_zip: Whether to process the latest ZIP file first
-            preserve_structure: Whether to preserve ZIP directory structure
-            handle_duplicates: How to handle duplicate files ('rename', 'skip', 'overwrite')
             use_batching: Whether to use batch processing (recommended for large datasets)
         """
         logger.info("="*60)
-        logger.info("Starting TCG data processing pipeline")
+        logger.info("Starting TCG data processing pipeline with deduplication tracking")
         logger.info(f"Mode: {mode}, Batching: {use_batching}")
+        logger.info(f"Tracking CSV: {self.tracking_csv}")
+        
         if mode == "replace":
             logger.warning("⚠️  WARNING: REPLACE MODE WILL DELETE ALL EXISTING DATA IN THE TABLE!")
             logger.warning("⚠️  Your existing historical data will be permanently lost!")
@@ -742,38 +795,44 @@ class TCGDataProcessor:
         logger.info("="*60)
         
         try:
-            # Process latest ZIP if requested
+            # Process latest ZIP if requested (always preserves structure now)
             if process_zip:
-                success, message = self.process_latest_zip(
-                    preserve_structure=preserve_structure,
-                    handle_duplicates=handle_duplicates
-                )
+                success, message = self.process_latest_zip()
                 if not success:
                     logger.error(f"ZIP processing failed: {message}")
+                    if not self.current_scrape_date:
+                        logger.error("No scrape date set - cannot proceed")
+                        return
                     if not Path(self.json_directory).exists() or not list(Path(self.json_directory).glob("**/*.json")):
                         logger.error("No JSON files available to process")
                         return
                     logger.warning("Continuing with existing JSON files...")
                 else:
                     logger.info(f"ZIP processing completed: {message}")
+            else:
+                # If not processing ZIP, ensure we have a scrape date
+                if not self.current_scrape_date:
+                    logger.warning("No ZIP processed - using today's date as scrape_date")
+                    self.current_scrape_date = datetime.now().strftime("%Y-%m-%d")
             
             # Process files using batch method or legacy method
             if use_batching:
-                logger.info("Using batch processing method to reduce memory usage")
+                logger.info("Using batch processing method with deduplication tracking")
                 total_records = self.process_all_files_batched(
-                    recursive=preserve_structure or process_zip,
-                    add_metadata=preserve_structure,
+                    recursive=True,  # Always recursive for preserved structure
+                    add_metadata=True,  # Always add metadata for tracking
                     mode=mode
                 )
                 if total_records > 0:
                     logger.info(f"Pipeline completed successfully - processed {total_records:,} records")
                 else:
-                    logger.warning("No data processed")
+                    logger.warning("No new data processed (all files may have been previously uploaded)")
             else:
                 # Legacy method - loads all data into memory
+                logger.warning("Legacy mode does not support deduplication tracking!")
                 df = self.process_all_files(
-                    recursive=preserve_structure or process_zip,
-                    add_metadata=preserve_structure
+                    recursive=True,
+                    add_metadata=True
                 )
                 
                 if not df.empty:
@@ -797,7 +856,7 @@ def main():
     """Main entry point"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='Process TCG data and upload to BigQuery')
+    parser = argparse.ArgumentParser(description='Process TCG data and upload to BigQuery with deduplication tracking')
     parser.add_argument('--project', help='GCP project ID', default=None)
     parser.add_argument('--dataset', help='BigQuery dataset ID', default='tcg_data')
     parser.add_argument('--table', help='BigQuery table ID', default='tcg_prices_bda')
@@ -806,20 +865,18 @@ def main():
                        help='Upload mode: append (default, safe) or replace (DANGER: deletes all existing data!)')
     parser.add_argument('--upload-dir', help='Directory containing ZIP files to process',
                        default='~/fileuploader/uploads')
+    parser.add_argument('--tracking-csv', help='CSV file to track uploaded files',
+                       default='uploaded_files_tracker.csv')
     parser.add_argument('--process-zip', action='store_true',
                        help='Process the latest ZIP file from upload directory before uploading')
     parser.add_argument('--zip-only', action='store_true',
                        help='Only extract ZIP file, do not upload to BigQuery')
-    parser.add_argument('--preserve-structure', action='store_true',
-                       help='Preserve directory structure when extracting ZIP files')
-    parser.add_argument('--handle-duplicates', choices=['rename', 'skip', 'overwrite'], 
-                       default='rename', help='How to handle duplicate filenames when flattening')
     parser.add_argument('--batch-size', type=int, default=1000,
                        help='Number of files to process per batch (default: 1000)')
     parser.add_argument('--max-memory', type=int, default=1024,
                        help='Maximum memory usage in MB before forcing garbage collection (default: 1024)')
     parser.add_argument('--no-batching', action='store_true',
-                       help='Disable batch processing (use legacy method - not recommended for large datasets)')
+                       help='Disable batch processing (use legacy method - not recommended, no dedup tracking)')
     
     args = parser.parse_args()
     
@@ -831,15 +888,13 @@ def main():
             json_directory=args.directory,
             upload_directory=args.upload_dir,
             batch_size=args.batch_size,
-            max_memory_mb=args.max_memory
+            max_memory_mb=args.max_memory,
+            tracking_csv=args.tracking_csv
         )
         
         # If only extracting ZIP
         if args.zip_only:
-            success, message = processor.process_latest_zip(
-                preserve_structure=args.preserve_structure,
-                handle_duplicates=args.handle_duplicates
-            )
+            success, message = processor.process_latest_zip()
             if success:
                 logger.info(f"ZIP extraction completed: {message}")
             else:
@@ -850,8 +905,6 @@ def main():
             processor.run(
                 mode=args.mode, 
                 process_zip=args.process_zip,
-                preserve_structure=args.preserve_structure,
-                handle_duplicates=args.handle_duplicates,
                 use_batching=not args.no_batching
             )
         

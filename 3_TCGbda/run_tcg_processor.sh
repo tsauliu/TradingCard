@@ -104,7 +104,7 @@ check_existing_session() {
 }
 
 start_processor() {
-    print_info "Starting TCG Data Processor..."
+    print_info "Starting TCG Data Processor with Deduplication Tracking..."
     print_info "Screen session: $SCREEN_NAME"
     print_info "Log file: $LOG_FILE"
     
@@ -112,10 +112,9 @@ start_processor() {
     MODE="${1:-append}"
     DIRECTORY="${2:-./product_details}"
     PROCESS_ZIP="${3:-no}"
-    PRESERVE_STRUCTURE="${4:-no}"
-    HANDLE_DUPLICATES="${5:-rename}"
-    BATCH_SIZE="${6:-500}"
-    MAX_MEMORY="${7:-512}"
+    BATCH_SIZE="${4:-500}"
+    MAX_MEMORY="${5:-512}"
+    TRACKING_CSV="${6:-uploaded_files_tracker.csv}"
     
     if [ "$MODE" = "replace" ]; then
         print_warning "MODE: REPLACE - This will DELETE ALL existing data in BigQuery!"
@@ -127,26 +126,17 @@ start_processor() {
     fi
     print_info "Data directory: $DIRECTORY"
     print_info "Process ZIP: $PROCESS_ZIP"
-    print_info "Preserve structure: $PRESERVE_STRUCTURE"
-    print_info "Handle duplicates: $HANDLE_DUPLICATES"
     print_info "Batch size: $BATCH_SIZE files"
     print_info "Max memory: $MAX_MEMORY MB"
+    print_info "Tracking CSV: $TRACKING_CSV"
     
     # Build command based on options
-    CMD="python3 $PYTHON_SCRIPT --mode $MODE --directory $DIRECTORY --batch-size $BATCH_SIZE --max-memory $MAX_MEMORY"
+    CMD="python3 $PYTHON_SCRIPT --mode $MODE --directory $DIRECTORY --batch-size $BATCH_SIZE --max-memory $MAX_MEMORY --tracking-csv $TRACKING_CSV"
     
     if [ "$PROCESS_ZIP" = "yes" ] || [ "$PROCESS_ZIP" = "true" ]; then
         CMD="$CMD --process-zip"
     elif [ "$PROCESS_ZIP" = "zip-only" ]; then
-        CMD="python3 $PYTHON_SCRIPT --directory $DIRECTORY --zip-only"
-    fi
-    
-    if [ "$PRESERVE_STRUCTURE" = "yes" ] || [ "$PRESERVE_STRUCTURE" = "true" ]; then
-        CMD="$CMD --preserve-structure"
-    fi
-    
-    if [ "$HANDLE_DUPLICATES" != "rename" ]; then
-        CMD="$CMD --handle-duplicates $HANDLE_DUPLICATES"
+        CMD="python3 $PYTHON_SCRIPT --directory $DIRECTORY --zip-only --tracking-csv $TRACKING_CSV"
     fi
     
     CMD="$CMD 2>&1 | tee $LOG_FILE"
@@ -182,33 +172,29 @@ show_usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  start [mode] [dir] [zip] [preserve] [dup] [batch] [mem]  Start the processor"
+    echo "  start [mode] [dir] [zip] [batch] [mem] [csv]  Start the processor with deduplication"
     echo "                                   mode: append/replace (default: append - SAFE)"
     echo "                                   WARNING: 'replace' will DELETE ALL existing data!"
     echo "                                   dir: JSON directory (default: ./product_details)"
     echo "                                   zip: yes/no/zip-only (default: no)"
-    echo "                                   preserve: yes/no - preserve dir structure (default: no)"
-    echo "                                   dup: rename/skip/overwrite - handle duplicates (default: rename)"
     echo "                                   batch: batch size (default: 500)"
     echo "                                   mem: max memory in MB (default: 512)"
-    echo "  extract [preserve] [dup]         Extract latest ZIP file only"
-    echo "                                   preserve: yes/no (default: no)"
-    echo "                                   dup: rename/skip/overwrite (default: rename)"
+    echo "                                   csv: tracking CSV file (default: uploaded_files_tracker.csv)"
+    echo "  extract                          Extract latest ZIP file only (preserves structure)"
     echo "  stop                             Stop the processor"
     echo "  status                           Check processor status"
     echo "  logs                             View recent logs"
     echo "  attach                           Attach to screen session"
+    echo "  tracker                          View uploaded files tracking status"
     echo "  help                             Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0 start                         # Start with default settings (append mode - safe)"
-    echo "  $0 start append                  # Start in append mode"
-    echo "  $0 start replace /data           # Start with custom data directory"
-    echo "  $0 start replace ./product_details yes  # Process ZIP then upload"
-    echo "  $0 start replace ./product_details yes yes  # Process ZIP with preserved structure"
-    echo "  $0 start replace ./product_details no no rename 1000 1024  # Custom batch/memory settings"
-    echo "  $0 extract                       # Extract latest ZIP only"
-    echo "  $0 extract yes                   # Extract with preserved structure"
+    echo "  $0 start append                  # Start in append mode with deduplication"
+    echo "  $0 start append ./product_details yes  # Process ZIP then upload with tracking"
+    echo "  $0 start append ./product_details no 1000 1024  # Custom batch/memory settings"
+    echo "  $0 extract                       # Extract latest ZIP only (preserves structure)"
+    echo "  $0 tracker                       # View tracking statistics"
     echo "  $0 stop                          # Stop the processor"
     echo "  $0 status                        # Check if processor is running"
     echo "  $0 logs                          # View recent log files"
@@ -219,23 +205,38 @@ case "${1:-start}" in
     start)
         check_requirements
         check_existing_session
-        start_processor "${2:-append}" "${3:-./product_details}" "${4:-no}" "${5:-no}" "${6:-rename}" "${7:-500}" "${8:-512}"
+        start_processor "${2:-append}" "${3:-./product_details}" "${4:-no}" "${5:-500}" "${6:-512}" "${7:-uploaded_files_tracker.csv}"
         ;;
     extract)
         check_requirements
-        PRESERVE="${2:-no}"
-        DUPLICATES="${3:-rename}"
-        print_info "Extracting latest ZIP file..."
-        
-        EXTRACT_CMD="python3 $PYTHON_SCRIPT --zip-only"
-        if [ "$PRESERVE" = "yes" ]; then
-            EXTRACT_CMD="$EXTRACT_CMD --preserve-structure"
+        print_info "Extracting latest ZIP file with preserved structure..."
+        python3 $PYTHON_SCRIPT --zip-only
+        ;;
+    tracker)
+        TRACKING_CSV="${2:-uploaded_files_tracker.csv}"
+        if [ -f "$TRACKING_CSV" ]; then
+            print_info "Tracking Statistics for: $TRACKING_CSV"
+            echo "========================================="
+            
+            # Count total uploaded files
+            TOTAL_FILES=$(tail -n +2 "$TRACKING_CSV" 2>/dev/null | wc -l)
+            print_info "Total uploaded files: $TOTAL_FILES"
+            
+            # Count unique scrape dates
+            UNIQUE_DATES=$(tail -n +2 "$TRACKING_CSV" 2>/dev/null | cut -d',' -f2 | sort -u | wc -l)
+            print_info "Unique scrape dates: $UNIQUE_DATES"
+            
+            # Show recent uploads
+            print_info "Last 5 uploaded files:"
+            tail -5 "$TRACKING_CSV" 2>/dev/null | column -t -s,
+            
+            # Show scrape date summary
+            print_info "\nUploads per scrape date:"
+            tail -n +2 "$TRACKING_CSV" 2>/dev/null | cut -d',' -f2 | sort | uniq -c | sort -rn | head -10
+        else
+            print_warning "No tracking CSV found at: $TRACKING_CSV"
+            print_info "Run the processor at least once to create tracking data"
         fi
-        if [ "$DUPLICATES" != "rename" ]; then
-            EXTRACT_CMD="$EXTRACT_CMD --handle-duplicates $DUPLICATES"
-        fi
-        
-        $EXTRACT_CMD
         ;;
     stop)
         print_info "Stopping processor..."
